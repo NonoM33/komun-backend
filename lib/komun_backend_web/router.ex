@@ -10,6 +10,10 @@ defmodule KomunBackendWeb.Router do
     plug KomunBackend.Auth.Pipeline
   end
 
+  pipeline :require_super_admin do
+    plug KomunBackendWeb.Plugs.RequireSuperAdmin
+  end
+
   # ── Health check ─────────────────────────────────────────────────────────
   scope "/api", KomunBackendWeb do
     pipe_through :api
@@ -69,5 +73,25 @@ defmodule KomunBackendWeb.Router do
     post "/devices/register", DeviceController, :register
     delete "/devices/:token", DeviceController, :unregister
 
+  end
+
+  # ── Dev-only quick login (never compiled in prod) ─────────────────────────
+  if Mix.env() == :dev do
+    scope "/api/v1", KomunBackendWeb do
+      pipe_through :api
+      post "/auth/dev-login", AuthController, :dev_login
+    end
+  end
+
+  # ── Admin routes (super_admin only) ───────────────────────────────────────
+  scope "/api/v1/admin", KomunBackendWeb do
+    pipe_through [:authenticated, :require_super_admin]
+
+    get    "/users",                           AdminController, :list_users
+    put    "/users/:id/role",                  AdminController, :update_user_role
+    get    "/buildings",                       AdminController, :list_buildings
+    post   "/buildings",                       AdminController, :create_building
+    post   "/buildings/:id/members",           AdminController, :add_member
+    delete "/buildings/:id/members/:user_id",  AdminController, :remove_member
   end
 end

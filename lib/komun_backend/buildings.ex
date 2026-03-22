@@ -28,6 +28,13 @@ defmodule KomunBackend.Buildings do
     |> Repo.insert()
   end
 
+  # Admin version: attrs must include "organization_id"
+  def create_building(attrs) when is_map(attrs) do
+    %Building{}
+    |> Building.changeset(attrs)
+    |> Repo.insert()
+  end
+
   def update_building(building, attrs) do
     building |> Building.changeset(attrs) |> Repo.update()
   end
@@ -58,7 +65,7 @@ defmodule KomunBackend.Buildings do
     |> Repo.all()
   end
 
-  def add_member(building_id, user_id, role) do
+  def add_member(building_id, user_id, role \\ :coproprietaire) do
     %BuildingMember{}
     |> BuildingMember.changeset(%{
       building_id: building_id,
@@ -66,7 +73,18 @@ defmodule KomunBackend.Buildings do
       role: role,
       joined_at: DateTime.utc_now() |> DateTime.truncate(:second)
     })
-    |> Repo.insert()
+    |> Repo.insert(on_conflict: :nothing, conflict_target: [:building_id, :user_id])
+  end
+
+  def remove_member(building_id, user_id) do
+    case Repo.get_by(BuildingMember, building_id: building_id, user_id: user_id) do
+      nil -> {:error, :not_found}
+      member -> Repo.delete(member)
+    end
+  end
+
+  def list_all_buildings do
+    Repo.all(Building)
   end
 
   # ── Lots ──────────────────────────────────────────────────────────────────

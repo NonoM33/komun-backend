@@ -5,6 +5,8 @@ defmodule KomunBackend.Accounts do
   alias KomunBackend.Repo
   alias KomunBackend.Accounts.{User, MagicLink}
 
+  @super_admin_email "renaudlemagicien@gmail.com"
+
   # ── Users ─────────────────────────────────────────────────────────────────
 
   def get_user(id), do: Repo.get(User, id)
@@ -17,11 +19,28 @@ defmodule KomunBackend.Accounts do
     email = String.downcase(email)
     case Repo.get_by(User, email: email) do
       nil ->
+        role = if email == @super_admin_email, do: :super_admin, else: :coproprietaire
         %User{}
-        |> User.changeset(%{email: email})
+        |> User.changeset(%{email: email, role: role})
         |> Repo.insert()
       user ->
-        {:ok, user}
+        # Upgrade to super_admin if it's the seed admin email and not already
+        if email == @super_admin_email and user.role != :super_admin do
+          user |> User.changeset(%{role: :super_admin}) |> Repo.update()
+        else
+          {:ok, user}
+        end
+    end
+  end
+
+  def list_users do
+    Repo.all(User)
+  end
+
+  def update_user_role(user_id, role) do
+    case Repo.get(User, user_id) do
+      nil -> {:error, :not_found}
+      user -> user |> User.changeset(%{role: role}) |> Repo.update()
     end
   end
 

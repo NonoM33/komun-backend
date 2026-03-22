@@ -66,6 +66,25 @@ defmodule KomunBackendWeb.AuthController do
     json(conn, %{message: "Logged out"})
   end
 
+  # POST /api/v1/auth/dev-login (dev only — route not compiled in prod)
+  def dev_login(conn, %{"email" => email}) do
+    with {:ok, user} <- Accounts.get_or_create_user(email) do
+      {:ok, access_token, _} = Guardian.encode_and_sign(user, %{}, ttl: {1, :hour})
+      {:ok, refresh_token, _} = Guardian.encode_and_sign(user, %{}, token_type: "refresh", ttl: {30, :day})
+      Accounts.record_sign_in(user)
+      json(conn, %{
+        access_token: access_token,
+        refresh_token: refresh_token,
+        user: user_json(user)
+      })
+    else
+      {:error, changeset} ->
+        conn |> put_status(422) |> json(%{errors: format_errors(changeset)})
+    end
+  end
+
+  def dev_login(conn, _), do: bad_request(conn, "email is required")
+
   # ── Helpers ───────────────────────────────────────────────────────────────
 
   defp user_json(user) do
