@@ -29,7 +29,7 @@ RUN mix compile
 RUN mix release
 
 # ── Runtime stage ─────────────────────────────────────────────────────────────
-FROM debian:bullseye-slim AS app
+FROM debian:bookworm-slim AS app
 
 RUN apt-get update -y && apt-get install -y libstdc++6 openssl libncurses5 locales curl \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
