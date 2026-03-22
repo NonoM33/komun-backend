@@ -60,7 +60,11 @@ defmodule KomunBackendWeb.IncidentController do
 
   defp authorize_building(conn, building_id) do
     user = Guardian.Plug.current_resource(conn)
-    if Buildings.member?(building_id, user.id), do: :ok, else: {:error, :unauthorized}
+    if user.role == :super_admin or Buildings.member?(building_id, user.id) do
+      :ok
+    else
+      conn |> put_status(403) |> json(%{error: "Forbidden"}) |> halt()
+    end
   end
 
   defp incident_json(inc) do

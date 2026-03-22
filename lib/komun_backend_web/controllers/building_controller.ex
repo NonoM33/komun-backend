@@ -5,7 +5,17 @@ defmodule KomunBackendWeb.BuildingController do
 
   def index(conn, _params) do
     user = Guardian.Plug.current_resource(conn)
-    results = Buildings.list_user_buildings(user.id)
+
+    # Super admin sees all active buildings
+    results =
+      if user.role == :super_admin do
+        Buildings.list_all_buildings()
+        |> Enum.filter(& &1.is_active)
+        |> Enum.map(fn b -> {b, :syndic_manager} end)
+      else
+        Buildings.list_user_buildings(user.id)
+      end
+
     json(conn, %{data: Enum.map(results, fn {b, role} ->
       %{
         id: b.id,
