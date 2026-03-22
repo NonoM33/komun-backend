@@ -47,8 +47,7 @@ USER nobody
 ENV PHX_SERVER=true
 EXPOSE 4000
 
-HEALTHCHECK --interval=30s --timeout=10s --start-period=10s --retries=3 \
+HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
   CMD curl -f http://localhost:4000/api/health || exit 1
 
-ENTRYPOINT ["/app/bin/komun_backend"]
-CMD ["start"]
+CMD ["/bin/sh", "-c", "/app/bin/komun_backend eval 'KomunBackend.Release.migrate()' && /app/bin/komun_backend start"]
