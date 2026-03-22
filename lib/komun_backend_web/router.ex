@@ -61,9 +61,14 @@ defmodule KomunBackendWeb.Router do
     resources "/buildings/:building_id/assemblies", AssemblyController,
       except: [:new, :edit] do
       resources "/agenda_items", AgendaItemController, only: [:index, :create, :update, :delete]
-      get  "/votes", VoteController, :index
-      post "/votes/:vote_id/respond", VoteController, :respond
     end
+
+    # Votes (standalone, per building)
+    get  "/buildings/:building_id/votes",         VoteController, :index
+    post "/buildings/:building_id/votes",         VoteController, :create
+    get  "/buildings/:building_id/votes/:id",     VoteController, :show
+    post "/buildings/:building_id/votes/:id/respond", VoteController, :respond
+    put  "/buildings/:building_id/votes/:id/close",   VoteController, :close
 
     # Documents
     resources "/buildings/:building_id/documents", DocumentController,
