@@ -28,10 +28,10 @@ defmodule KomunBackend.Buildings do
     |> Repo.insert()
   end
 
-  # Admin version: attrs must include "organization_id"
+  # Admin version: organization_id optional
   def create_building(attrs) when is_map(attrs) do
     %Building{}
-    |> Building.changeset(attrs)
+    |> Building.admin_changeset(attrs)
     |> Repo.insert()
   end
 

@@ -33,4 +33,13 @@ defmodule KomunBackend.Buildings.Building do
     |> validate_required([:name, :address, :city, :postal_code, :organization_id])
     |> validate_number(:construction_year, greater_than: 1800, less_than_or_equal_to: 2030)
   end
+
+  # Admin changeset — organization_id optional (super_admin creates standalone buildings)
+  def admin_changeset(building, attrs) do
+    building
+    |> cast(attrs, [:name, :address, :city, :postal_code, :country,
+                    :lot_count, :construction_year, :cover_url, :settings, :organization_id])
+    |> validate_required([:name, :address, :city, :postal_code])
+    |> validate_number(:construction_year, greater_than: 1800, less_than_or_equal_to: 2030)
+  end
 end
