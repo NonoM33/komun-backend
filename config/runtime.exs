@@ -77,6 +77,14 @@ if config_env() == :prod do
     adapter: Swoosh.Adapters.Resend,
     api_key: resend_api_key
 
+  # ── Guardian JWT secret ────────────────────────────────────────────────────
+  guardian_secret =
+    System.get_env("GUARDIAN_SECRET_KEY") ||
+      raise "environment variable GUARDIAN_SECRET_KEY is missing."
+
+  config :komun_backend, KomunBackend.Auth.Guardian,
+    secret_key: guardian_secret
+
   # ## SSL Support
   #
   # To get SSL working, you will need to add the `https` key
