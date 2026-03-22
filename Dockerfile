@@ -1,5 +1,5 @@
 # ── Build stage ──────────────────────────────────────────────────────────────
-FROM hexpm/elixir:1.19.5-erlang-28.3-debian-bullseye-20250428-slim AS builder
+FROM hexpm/elixir:1.18.3-erlang-27.2-debian-bullseye-20250117-slim AS builder
 
 RUN apt-get update -y && apt-get install -y build-essential git curl \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
