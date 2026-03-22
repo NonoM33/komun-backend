@@ -20,6 +20,10 @@ if System.get_env("PHX_SERVER") do
   config :komun_backend, KomunBackendWeb.Endpoint, server: true
 end
 
+# Dev login — enable via ALLOW_DEV_LOGIN=true (never enable on real prod)
+config :komun_backend, :allow_dev_login,
+  System.get_env("ALLOW_DEV_LOGIN") == "true"
+
 config :komun_backend, KomunBackendWeb.Endpoint,
   http: [port: String.to_integer(System.get_env("PORT", "4000"))]
 

@@ -54,6 +54,19 @@ defmodule KomunBackendWeb.AdminController do
 
   def add_member(conn, _), do: conn |> put_status(400) |> json(%{error: "user_id or user_email required"})
 
+  # DELETE /admin/users/:id/onboarding — reset first_name/last_name to nil
+  def reset_onboarding(conn, %{"id" => user_id}) do
+    case Accounts.get_user(user_id) do
+      nil ->
+        conn |> put_status(404) |> json(%{error: "User not found"})
+      user ->
+        case Accounts.update_user(user, %{first_name: nil, last_name: nil}) do
+          {:ok, updated} -> json(conn, %{data: user_json(updated)})
+          {:error, cs} -> conn |> put_status(422) |> json(%{errors: format_errors(cs)})
+        end
+    end
+  end
+
   def remove_member(conn, %{"id" => building_id, "user_id" => user_id}) do
     case Buildings.remove_member(building_id, user_id) do
       {:ok, _} -> json(conn, %{message: "Member removed"})

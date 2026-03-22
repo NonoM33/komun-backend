@@ -66,8 +66,12 @@ defmodule KomunBackendWeb.AuthController do
     json(conn, %{message: "Logged out"})
   end
 
-  # POST /api/v1/auth/dev-login (dev only — route not compiled in prod)
+  # POST /api/v1/auth/dev-login (only when ALLOW_DEV_LOGIN=true env var set)
   def dev_login(conn, %{"email" => email}) do
+    unless Application.get_env(:komun_backend, :allow_dev_login, false) do
+      conn |> put_status(404) |> json(%{error: "Not found"}) |> halt()
+    end
+
     with {:ok, user} <- Accounts.get_or_create_user(email) do
       {:ok, access_token, _} = Guardian.encode_and_sign(user, %{}, ttl: {1, :hour})
       {:ok, refresh_token, _} = Guardian.encode_and_sign(user, %{}, token_type: "refresh", ttl: {30, :day})

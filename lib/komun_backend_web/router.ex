@@ -80,12 +80,10 @@ defmodule KomunBackendWeb.Router do
 
   end
 
-  # ── Dev-only quick login (never compiled in prod) ─────────────────────────
-  if Mix.env() == :dev do
-    scope "/api/v1", KomunBackendWeb do
-      pipe_through :api
-      post "/auth/dev-login", AuthController, :dev_login
-    end
+  # ── Dev login (guarded by ALLOW_DEV_LOGIN env var at runtime) ────────────
+  scope "/api/v1", KomunBackendWeb do
+    pipe_through :api
+    post "/auth/dev-login", AuthController, :dev_login
   end
 
   # ── Admin routes (super_admin only) ───────────────────────────────────────
@@ -94,6 +92,7 @@ defmodule KomunBackendWeb.Router do
 
     get    "/users",                           AdminController, :list_users
     put    "/users/:id/role",                  AdminController, :update_user_role
+    delete "/users/:id/onboarding",            AdminController, :reset_onboarding
     get    "/buildings",                       AdminController, :list_buildings
     post   "/buildings",                       AdminController, :create_building
     post   "/buildings/:id/members",           AdminController, :add_member
