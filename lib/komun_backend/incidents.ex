@@ -4,6 +4,7 @@ defmodule KomunBackend.Incidents do
   import Ecto.Query
   alias KomunBackend.Repo
   alias KomunBackend.Incidents.{Incident, IncidentComment}
+  alias KomunBackend.Notifications
   alias KomunBackendWeb.BuildingChannel
 
   def list_incidents(building_id, filters \\ %{}) do
@@ -32,6 +33,14 @@ defmodule KomunBackend.Incidents do
     with {:ok, incident} <- %Incident{} |> Incident.changeset(attrs) |> Repo.insert() do
       incident = Repo.preload(incident, [:reporter, :assignee])
       BuildingChannel.broadcast_incident(building_id, incident)
+
+      Notifications.send_to_building(
+        building_id,
+        "Nouvel incident signalé",
+        incident.title,
+        %{type: "incident", incident_id: incident.id, building_id: building_id}
+      )
+
       {:ok, incident}
     end
   end
@@ -53,6 +62,18 @@ defmodule KomunBackend.Incidents do
 
   def add_comment(incident_id, author_id, attrs) do
     attrs = Map.merge(attrs, %{"incident_id" => incident_id, "author_id" => author_id})
-    %IncidentComment{} |> IncidentComment.changeset(attrs) |> Repo.insert()
+
+    with {:ok, comment} <- %IncidentComment{} |> IncidentComment.changeset(attrs) |> Repo.insert() do
+      incident = get_incident!(incident_id)
+
+      Notifications.send_to_building(
+        incident.building_id,
+        "Nouvelle réponse à un incident",
+        incident.title,
+        %{type: "incident_comment", incident_id: incident_id, building_id: incident.building_id}
+      )
+
+      {:ok, comment}
+    end
   end
 end

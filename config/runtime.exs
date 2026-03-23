@@ -24,6 +24,9 @@ end
 config :komun_backend, :allow_dev_login,
   System.get_env("ALLOW_DEV_LOGIN") == "true"
 
+# FCM server key for push notifications (Firebase Cloud Messaging legacy HTTP API)
+config :komun_backend, :fcm_server_key, System.get_env("FCM_SERVER_KEY")
+
 config :komun_backend, KomunBackendWeb.Endpoint,
   http: [port: String.to_integer(System.get_env("PORT", "4000"))]
 
