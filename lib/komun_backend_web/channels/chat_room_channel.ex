@@ -7,7 +7,7 @@ defmodule KomunBackendWeb.ChatRoomChannel do
   def join("room:" <> building_id, _payload, socket) do
     user = socket.assigns.current_user
 
-    if Buildings.member?(building_id, user.id) do
+    if user.role == :super_admin or Buildings.member?(building_id, user.id) do
       messages = Chat.list_messages("building:#{building_id}")
       socket = assign(socket, :building_id, building_id)
       {:ok, %{messages: format_messages(messages)}, socket}
