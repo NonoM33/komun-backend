@@ -28,6 +28,9 @@ defmodule KomunBackendWeb.Router do
     get  "/auth/magic-link/verify", AuthController, :verify_magic_link
     post "/auth/refresh", AuthController, :refresh
     post "/auth/logout", AuthController, :logout
+
+    # Invite info (public — pour afficher le nom de l'immeuble avant connexion)
+    get "/invites/:token", InviteController, :show
   end
 
   # ── Authenticated routes ──────────────────────────────────────────────────
@@ -77,6 +80,10 @@ defmodule KomunBackendWeb.Router do
     # Push notification device registration
     post "/devices/register", DeviceController, :register
     delete "/devices/:token", DeviceController, :unregister
+
+    # Invites — création et utilisation
+    post "/buildings/:building_id/invites", InviteController, :create
+    post "/invites/:token/join", InviteController, :join
 
   end
 

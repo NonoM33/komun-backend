@@ -3,7 +3,7 @@ defmodule KomunBackend.Buildings do
 
   import Ecto.Query
   alias KomunBackend.Repo
-  alias KomunBackend.Buildings.{Building, BuildingMember, Lot}
+  alias KomunBackend.Buildings.{Building, BuildingInvite, BuildingMember, Lot}
 
   def list_buildings(org_id) do
     from(b in Building,
@@ -110,5 +110,61 @@ defmodule KomunBackend.Buildings do
       order_by: [asc: b.name]
     )
     |> Repo.all()
+  end
+
+  # ── Invites ────────────────────────────────────────────────────────────────
+
+  @doc "Crée une invitation pour un immeuble. opts: role, max_uses, expires_in_days."
+  def create_invite(building_id, user_id, opts \\ []) do
+    token = :crypto.strong_rand_bytes(8) |> Base.url_encode64(padding: false)
+    role = Keyword.get(opts, :role, "coproprietaire")
+    max_uses = Keyword.get(opts, :max_uses, nil)
+
+    expires_at =
+      case Keyword.get(opts, :expires_in_days) do
+        nil -> nil
+        days -> DateTime.utc_now() |> DateTime.add(days * 86_400, :second) |> DateTime.truncate(:second)
+      end
+
+    %BuildingInvite{}
+    |> BuildingInvite.changeset(%{
+      token: token,
+      building_id: building_id,
+      created_by_id: user_id,
+      role: role,
+      max_uses: max_uses,
+      expires_at: expires_at
+    })
+    |> Repo.insert()
+  end
+
+  @doc "Récupère une invite active non expirée par son token."
+  def get_invite_by_token(token) do
+    now = DateTime.utc_now()
+
+    from(i in BuildingInvite,
+      where: i.token == ^token and i.is_active == true,
+      where: is_nil(i.expires_at) or i.expires_at > ^now,
+      where: is_nil(i.max_uses) or i.used_count < i.max_uses,
+      preload: :building
+    )
+    |> Repo.one()
+  end
+
+  @doc "Ajoute le user à l'immeuble via l'invite et incrémente used_count."
+  def use_invite(invite, user_id) do
+    Repo.transaction(fn ->
+      case add_member(invite.building_id, user_id, String.to_existing_atom(invite.role)) do
+        {:ok, member} ->
+          invite
+          |> BuildingInvite.changeset(%{used_count: invite.used_count + 1})
+          |> Repo.update!()
+
+          member
+
+        {:error, reason} ->
+          Repo.rollback(reason)
+      end
+    end)
   end
 end
