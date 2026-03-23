@@ -73,7 +73,10 @@ defmodule KomunBackend.Buildings do
       role: role,
       joined_at: DateTime.utc_now() |> DateTime.truncate(:second)
     })
-    |> Repo.insert(on_conflict: :nothing, conflict_target: [:building_id, :user_id])
+    |> Repo.insert(
+      on_conflict: {:replace, [:role, :is_active, :joined_at, :updated_at]},
+      conflict_target: [:building_id, :user_id]
+    )
   end
 
   def remove_member(building_id, user_id) do
