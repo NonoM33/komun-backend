@@ -11,7 +11,10 @@ defmodule KomunBackend.Incidents do
     base =
       from(i in Incident,
         where: i.building_id == ^building_id,
-        preload: [:reporter, :assignee, :comments],
+        # comment_json/1 reads comment.author, so :author has to be preloaded
+        # here too — otherwise we hand it a %Ecto.Association.NotLoaded{} and
+        # the whole response crashes with a KeyError on :first_name.
+        preload: [:reporter, :assignee, comments: :author],
         order_by: [desc: i.inserted_at]
       )
 
