@@ -16,6 +16,7 @@ defmodule KomunBackend.Buildings.Building do
     field :cover_url, :string
     field :settings, :map, default: %{}
     field :is_active, :boolean, default: true
+    field :join_code, :string
 
     belongs_to :organization, KomunBackend.Organizations.Organization
     has_many :lots, KomunBackend.Buildings.Lot
@@ -29,17 +30,21 @@ defmodule KomunBackend.Buildings.Building do
   def changeset(building, attrs) do
     building
     |> cast(attrs, [:name, :address, :city, :postal_code, :country,
-                    :lot_count, :construction_year, :cover_url, :settings, :organization_id])
+                    :lot_count, :construction_year, :cover_url, :settings,
+                    :join_code, :organization_id])
     |> validate_required([:name, :address, :city, :postal_code, :organization_id])
     |> validate_number(:construction_year, greater_than: 1800, less_than_or_equal_to: 2030)
+    |> unique_constraint(:join_code)
   end
 
   # Admin changeset — organization_id optional (super_admin creates standalone buildings)
   def admin_changeset(building, attrs) do
     building
     |> cast(attrs, [:name, :address, :city, :postal_code, :country,
-                    :lot_count, :construction_year, :cover_url, :settings, :organization_id])
+                    :lot_count, :construction_year, :cover_url, :settings,
+                    :join_code, :organization_id])
     |> validate_required([:name, :address, :city, :postal_code])
     |> validate_number(:construction_year, greater_than: 1800, less_than_or_equal_to: 2030)
+    |> unique_constraint(:join_code)
   end
 end

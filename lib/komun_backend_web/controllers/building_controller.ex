@@ -3,6 +3,10 @@ defmodule KomunBackendWeb.BuildingController do
 
   alias KomunBackend.Buildings
 
+  # Roles that should see the join code alongside their building — they are
+  # the ones expected to hand it out to new residents.
+  @privileged_roles [:president_cs, :syndic_manager, :syndic_staff]
+
   def index(conn, _params) do
     user = Guardian.Plug.current_resource(conn)
 
@@ -17,7 +21,7 @@ defmodule KomunBackendWeb.BuildingController do
       end
 
     json(conn, %{data: Enum.map(results, fn {b, role} ->
-      %{
+      base = %{
         id: b.id,
         name: b.name,
         address: b.address,
@@ -27,6 +31,12 @@ defmodule KomunBackendWeb.BuildingController do
         cover_url: b.cover_url,
         role: role
       }
+
+      if user.role == :super_admin or role in @privileged_roles do
+        Map.put(base, :join_code, b.join_code)
+      else
+        base
+      end
     end)})
   end
 
@@ -41,6 +51,62 @@ defmodule KomunBackendWeb.BuildingController do
       lot_count: building.lot_count,
       cover_url: building.cover_url
     }})
+  end
+
+  # POST /api/v1/buildings/join
+  # Body: %{"code" => "A1B2C3D4"}
+  #
+  # Any authenticated user can redeem a short code. New members join with the
+  # `coproprietaire` role by default — syndics / CS presidents still onboard
+  # through the dedicated invite-token flow.
+  def join(conn, %{"code" => code}) when is_binary(code) do
+    user = Guardian.Plug.current_resource(conn)
+
+    case Buildings.join_by_code(code, user.id) do
+      {:ok, {:already_member, building}} ->
+        conn
+        |> put_status(:ok)
+        |> json(%{
+          data: building_json(building),
+          message: "already_member"
+        })
+
+      {:ok, {building, _member}} ->
+        conn
+        |> put_status(:created)
+        |> json(%{data: building_json(building)})
+
+      {:error, :not_found} ->
+        conn
+        |> put_status(:not_found)
+        |> json(%{error: "invalid_code"})
+
+      {:error, changeset} ->
+        conn
+        |> put_status(:unprocessable_entity)
+        |> json(%{
+          errors: Ecto.Changeset.traverse_errors(changeset, fn {msg, _} -> msg end)
+        })
+    end
+  end
+
+  def join(conn, _params) do
+    conn
+    |> put_status(:bad_request)
+    |> json(%{error: "missing_code"})
+  end
+
+  defp building_json(b) do
+    %{
+      id: b.id,
+      name: b.name,
+      address: b.address,
+      city: b.city,
+      postal_code: b.postal_code,
+      lot_count: b.lot_count,
+      cover_url: b.cover_url,
+      role: :coproprietaire
+    }
   end
 
   def members(conn, %{"id" => id}) do
