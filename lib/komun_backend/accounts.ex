@@ -56,6 +56,21 @@ defmodule KomunBackend.Accounts do
     |> Repo.update()
   end
 
+  @doc """
+  Stamps the AI-assistant rate-limit cursor. Called after a successful
+  Groq completion so the user is locked out for the next 24h window.
+  """
+  def touch_last_chat_at(user) do
+    now = DateTime.utc_now() |> DateTime.truncate(:second)
+
+    case user
+         |> Ecto.Changeset.change(last_chat_at: now)
+         |> Repo.update() do
+      {:ok, updated} -> updated
+      _ -> user
+    end
+  end
+
   # ── Magic links ───────────────────────────────────────────────────────────
 
   def create_magic_link(email) do

@@ -30,6 +30,9 @@ defmodule KomunBackend.Incidents do
 
   def get_incident!(id), do: Repo.get!(Incident, id) |> Repo.preload([:reporter, :assignee, comments: :author])
 
+  @doc "Same as get_incident!/1 but returns nil when missing."
+  def get_incident(id), do: Repo.get(Incident, id)
+
   def create_incident(building_id, user_id, attrs) do
     attrs = Map.merge(attrs, %{"building_id" => building_id, "reporter_id" => user_id})
 
@@ -44,8 +47,36 @@ defmodule KomunBackend.Incidents do
         %{type: "incident", incident_id: incident.id, building_id: building_id}
       )
 
+      # Fire-and-forget AI triage. Groq fills ai_answer on the incident and
+      # the resident polls for the update. Failure leaves the incident as-is.
+      KomunBackend.AI.Triage.triage_incident_async(incident)
+
       {:ok, incident}
     end
+  end
+
+  @doc """
+  Confirms (or re-opens) the AI-generated answer. Only privileged members
+  should call this — the controller gates access.
+  """
+  def confirm_ai_answer(%Incident{} = incident, user_id) do
+    now = DateTime.utc_now() |> DateTime.truncate(:second)
+
+    incident
+    |> Incident.changeset(%{
+      ai_answer_confirmed_at: now,
+      ai_answer_confirmed_by_id: user_id
+    })
+    |> Repo.update()
+  end
+
+  def unconfirm_ai_answer(%Incident{} = incident) do
+    incident
+    |> Incident.changeset(%{
+      ai_answer_confirmed_at: nil,
+      ai_answer_confirmed_by_id: nil
+    })
+    |> Repo.update()
   end
 
   def update_incident(incident, attrs) do

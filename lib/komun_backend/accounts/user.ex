@@ -19,6 +19,7 @@ defmodule KomunBackend.Accounts.User do
     field :locale, :string, default: "fr"
     field :push_tokens, {:array, :string}, default: []
     field :last_sign_in_at, :utc_datetime
+    field :last_chat_at, :utc_datetime
 
     # Profile — declared on the onboarding screen right after joining a residence.
     field :status, Ecto.Enum,
