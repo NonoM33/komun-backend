@@ -20,9 +20,19 @@ defmodule KomunBackend.Incidents.Incident do
     field :location, :string
     field :lot_number, :string
 
+    # AI triage — populated asynchronously after creation. Residents see it
+    # as "réponse proposée par l'assistant" until the syndic / conseil
+    # confirms it (ai_answer_confirmed_at set).
+    field :ai_answer, :string
+    field :ai_answered_at, :utc_datetime
+    field :ai_model, :string
+    field :ai_answer_confirmed_at, :utc_datetime
+
     belongs_to :building, KomunBackend.Buildings.Building
     belongs_to :reporter, KomunBackend.Accounts.User, foreign_key: :reporter_id
     belongs_to :assignee, KomunBackend.Accounts.User, foreign_key: :assignee_id
+    belongs_to :ai_answer_confirmed_by, KomunBackend.Accounts.User,
+      foreign_key: :ai_answer_confirmed_by_id
     has_many :comments, KomunBackend.Incidents.IncidentComment
 
     timestamps(type: :utc_datetime)
@@ -32,7 +42,9 @@ defmodule KomunBackend.Incidents.Incident do
     incident
     |> cast(attrs, [:title, :description, :category, :severity, :status,
                     :photo_urls, :location, :lot_number, :building_id, :reporter_id,
-                    :assignee_id, :resolution_note])
+                    :assignee_id, :resolution_note,
+                    :ai_answer, :ai_answered_at, :ai_model,
+                    :ai_answer_confirmed_at, :ai_answer_confirmed_by_id])
     |> validate_required([:title, :description, :category, :building_id, :reporter_id])
     |> validate_length(:title, min: 5, max: 200)
   end

@@ -57,6 +57,8 @@ defmodule KomunBackendWeb.Router do
     # Incidents
     resources "/buildings/:building_id/incidents", IncidentController, except: [:new, :edit] do
       post "/comments", IncidentCommentController, :create
+      post "/confirm-ai", IncidentController, :confirm_ai_answer
+      delete "/confirm-ai", IncidentController, :unconfirm_ai_answer
     end
 
     # Announcements
@@ -77,8 +79,14 @@ defmodule KomunBackendWeb.Router do
     put  "/buildings/:building_id/votes/:id/close",   VoteController, :close
 
     # Documents
+    get "/buildings/:building_id/documents/mandatory", DocumentController, :mandatory
     resources "/buildings/:building_id/documents", DocumentController,
       except: [:new, :edit]
+
+    # AI assistant (chatbot)
+    get  "/buildings/:building_id/assistant/history", AssistantController, :history
+    get  "/buildings/:building_id/assistant/status",  AssistantController, :status
+    post "/buildings/:building_id/assistant/ask",     AssistantController, :ask
 
     # Push notification device registration
     post "/devices/register", DeviceController, :register

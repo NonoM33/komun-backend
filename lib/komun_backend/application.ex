@@ -13,6 +13,8 @@ defmodule KomunBackend.Application do
       {Redix, host: System.get_env("REDIS_HOST", "localhost"),
               port: String.to_integer(System.get_env("REDIS_PORT", "6379")),
               name: :redix},
+      # Fire-and-forget tasks (AI triage, notifications, etc.)
+      {Task.Supervisor, name: KomunBackend.TaskSupervisor},
       # Background jobs
       {Oban, Application.fetch_env!(:komun_backend, Oban)},
       KomunBackendWeb.Endpoint

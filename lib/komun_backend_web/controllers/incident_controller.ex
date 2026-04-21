@@ -56,7 +56,61 @@ defmodule KomunBackendWeb.IncidentController do
     end
   end
 
+  # POST /api/v1/buildings/:building_id/incidents/:id/confirm-ai
+  # Restricted to privileged members (syndic + conseil + super_admin).
+  def confirm_ai_answer(conn, %{"building_id" => building_id, "id" => id}) do
+    user = Guardian.Plug.current_resource(conn)
+
+    with :ok <- authorize_privileged(conn, building_id, user) do
+      incident = Incidents.get_incident!(id)
+
+      case Incidents.confirm_ai_answer(incident, user.id) do
+        {:ok, updated} ->
+          updated = KomunBackend.Repo.preload(updated, [:reporter, :assignee, comments: :author])
+          json(conn, %{data: incident_json(updated)})
+
+        {:error, cs} ->
+          conn |> put_status(:unprocessable_entity) |> json(%{errors: format_errors(cs)})
+      end
+    end
+  end
+
+  # DELETE /api/v1/buildings/:building_id/incidents/:id/confirm-ai
+  def unconfirm_ai_answer(conn, %{"building_id" => building_id, "id" => id}) do
+    user = Guardian.Plug.current_resource(conn)
+
+    with :ok <- authorize_privileged(conn, building_id, user) do
+      incident = Incidents.get_incident!(id)
+
+      case Incidents.unconfirm_ai_answer(incident) do
+        {:ok, updated} ->
+          updated = KomunBackend.Repo.preload(updated, [:reporter, :assignee, comments: :author])
+          json(conn, %{data: incident_json(updated)})
+
+        {:error, cs} ->
+          conn |> put_status(:unprocessable_entity) |> json(%{errors: format_errors(cs)})
+      end
+    end
+  end
+
   # ── Helpers ───────────────────────────────────────────────────────────────
+
+  @privileged_roles [:super_admin, :syndic_manager, :syndic_staff, :president_cs, :membre_cs]
+
+  defp authorize_privileged(conn, building_id, user) do
+    member_role = Buildings.get_member_role(building_id, user.id)
+
+    cond do
+      user.role == :super_admin -> :ok
+      user.role in @privileged_roles -> :ok
+      member_role in @privileged_roles -> :ok
+      true ->
+        conn
+        |> put_status(:forbidden)
+        |> json(%{error: "Seuls le syndic et le conseil syndical peuvent valider une réponse IA."})
+        |> halt()
+    end
+  end
 
   defp authorize_building(conn, building_id) do
     user = Guardian.Plug.current_resource(conn)
@@ -88,6 +142,11 @@ defmodule KomunBackendWeb.IncidentController do
       building_id: inc.building_id,
       reporter: maybe_user(inc.reporter),
       assignee: maybe_user(inc.assignee),
+      ai_answer: inc.ai_answer,
+      ai_answered_at: inc.ai_answered_at,
+      ai_model: inc.ai_model,
+      ai_answer_confirmed_at: inc.ai_answer_confirmed_at,
+      ai_answer_confirmed_by_id: inc.ai_answer_confirmed_by_id,
       comments: comments,
       inserted_at: inc.inserted_at,
       updated_at: inc.updated_at
