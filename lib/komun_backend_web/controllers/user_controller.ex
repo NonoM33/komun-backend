@@ -29,6 +29,9 @@ defmodule KomunBackendWeb.UserController do
     phone: u.phone,
     avatar_url: u.avatar_url,
     locale: u.locale,
+    status: u.status,
+    apartment_number: u.apartment_number,
+    floor: u.floor,
     inserted_at: u.inserted_at
   }
 end

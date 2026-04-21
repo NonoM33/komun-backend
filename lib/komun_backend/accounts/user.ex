@@ -20,6 +20,12 @@ defmodule KomunBackend.Accounts.User do
     field :push_tokens, {:array, :string}, default: []
     field :last_sign_in_at, :utc_datetime
 
+    # Profile — declared on the onboarding screen right after joining a residence.
+    field :status, Ecto.Enum,
+      values: [:owner_occupant, :owner_landlord, :tenant, :temporary]
+    field :apartment_number, :string
+    field :floor, :integer
+
     belongs_to :organization, KomunBackend.Organizations.Organization
 
     timestamps(type: :utc_datetime)
@@ -28,13 +34,18 @@ defmodule KomunBackend.Accounts.User do
   def changeset(user, attrs) do
     user
     |> cast(attrs, [:email, :role, :first_name, :last_name, :phone, :avatar_url,
-                    :locale, :push_tokens, :organization_id])
+                    :locale, :push_tokens, :organization_id,
+                    :status, :apartment_number, :floor])
     |> validate_required([:email])
     |> validate_format(:email, ~r/^[^\s]+@[^\s]+$/, message: "must be a valid email")
     |> validate_length(:email, max: 160)
     |> unique_constraint(:email)
     |> validate_inclusion(:role, ~w(super_admin syndic_manager syndic_staff president_cs
                                     membre_cs coproprietaire locataire gardien prestataire)a)
+    |> validate_number(:floor, greater_than_or_equal_to: -5, less_than_or_equal_to: 60)
+    |> validate_length(:first_name, max: 80)
+    |> validate_length(:last_name, max: 80)
+    |> validate_length(:apartment_number, max: 16)
   end
 
   def display_name(%__MODULE__{first_name: nil, email: email}), do: email

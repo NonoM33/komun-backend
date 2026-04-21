@@ -38,8 +38,9 @@ defmodule KomunBackendWeb.Router do
     pipe_through :authenticated
 
     # Current user
-    get  "/me", UserController, :me
-    put  "/me", UserController, :update_profile
+    get   "/me", UserController, :me
+    put   "/me", UserController, :update_profile
+    patch "/me", UserController, :update_profile
 
     # Organizations
     get  "/organizations/:id", OrganizationController, :show
@@ -47,6 +48,8 @@ defmodule KomunBackendWeb.Router do
 
     # Buildings
     get    "/buildings", BuildingController, :index
+    # Note: :join must be declared before :show so "join" isn't parsed as an :id.
+    post   "/buildings/join", BuildingController, :join
     get    "/buildings/:id", BuildingController, :show
     get    "/buildings/:id/members", BuildingController, :members
     get    "/buildings/:id/lots", BuildingController, :lots
