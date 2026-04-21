@@ -89,14 +89,27 @@ defmodule KomunBackendWeb.AssistantController do
 
   defp rate_limit_info(user) do
     now = DateTime.utc_now()
-    next = Assistant.next_allowed_at(user)
-    available? = DateTime.compare(next, now) != :gt
+    last_chat_at = Map.get(user, :last_chat_at)
+    role = Map.get(user, :role)
+
+    # super_admin bypasses the rate limit; anyone who hasn't chatted yet is
+    # immediately allowed — the plain "next >= now" comparison would flip
+    # to false for sub-second clock drift.
+    available? =
+      cond do
+        role == :super_admin -> true
+        is_nil(last_chat_at) -> true
+        true ->
+          next = Assistant.next_allowed_at(user)
+          DateTime.compare(next, now) != :gt
+      end
 
     %{
       window_hours: Assistant.rate_limit_window_hours(),
       available: available?,
-      next_allowed_at: if(available?, do: nil, else: next),
-      last_chat_at: Map.get(user, :last_chat_at)
+      next_allowed_at:
+        if(available?, do: nil, else: Assistant.next_allowed_at(user)),
+      last_chat_at: last_chat_at
     }
   end
 end
