@@ -83,6 +83,10 @@ defmodule KomunBackendWeb.Router do
     resources "/buildings/:building_id/documents", DocumentController,
       except: [:new, :edit]
 
+    # Channels (threads per residence)
+    resources "/buildings/:building_id/channels", ChannelController,
+      except: [:new, :edit, :show]
+
     # AI assistant (chatbot)
     get  "/buildings/:building_id/assistant/history", AssistantController, :history
     get  "/buildings/:building_id/assistant/status",  AssistantController, :status
