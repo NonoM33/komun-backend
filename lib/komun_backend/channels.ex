@@ -34,13 +34,22 @@ defmodule KomunBackend.Channels do
   def get_channel(id), do: Repo.get(Channel, id)
 
   def create_channel(building_id, user_id, attrs) do
+    # Normalize to string keys — Phoenix hands us string-keyed params for
+    # body fields (name/description/…), and Ecto.Changeset.cast raises
+    # Ecto.CastError if we mix string and atom keys in the same map.
+    attrs = to_string_keyed(attrs)
+
     %Channel{}
     |> Channel.changeset(
       attrs
-      |> Map.put(:building_id, building_id)
-      |> Map.put(:created_by_id, user_id)
+      |> Map.put("building_id", building_id)
+      |> Map.put("created_by_id", user_id)
     )
     |> Repo.insert()
+  end
+
+  defp to_string_keyed(attrs) when is_map(attrs) do
+    Map.new(attrs, fn {k, v} -> {to_string(k), v} end)
   end
 
   def update_channel(%Channel{} = channel, attrs) do
