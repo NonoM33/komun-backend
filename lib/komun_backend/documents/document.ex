@@ -31,6 +31,8 @@ defmodule KomunBackend.Documents.Document do
     field :mime_type, :string
     field :is_public, :boolean, default: true
     field :is_pinned, :boolean, default: false
+    field :is_archived, :boolean, default: false
+    field :archived_at, :utc_datetime
     field :content_text, :string
 
     belongs_to :building, KomunBackend.Buildings.Building
@@ -42,8 +44,8 @@ defmodule KomunBackend.Documents.Document do
   def changeset(doc, attrs) do
     doc
     |> cast(attrs, [:title, :filename, :file_url, :category, :file_size_bytes,
-                    :mime_type, :is_public, :is_pinned, :content_text,
-                    :building_id, :uploaded_by_id])
+                    :mime_type, :is_public, :is_pinned, :is_archived, :archived_at,
+                    :content_text, :building_id, :uploaded_by_id])
     |> validate_required([:title, :building_id])
     |> maybe_auto_pin_reglement()
   end
