@@ -78,6 +78,21 @@ defmodule KomunBackendWeb.Router do
     post "/buildings/:building_id/votes/:id/respond", VoteController, :respond
     put  "/buildings/:building_id/votes/:id/close",   VoteController, :close
 
+    # Projects (copro devis workflow) — groups devis by project, then starts
+    # a vote on the chosen devis.
+    get    "/buildings/:building_id/projects",            ProjectController, :index
+    post   "/buildings/:building_id/projects",            ProjectController, :create
+    get    "/buildings/:building_id/projects/:id",        ProjectController, :show
+    patch  "/buildings/:building_id/projects/:id",        ProjectController, :update
+    put    "/buildings/:building_id/projects/:id",        ProjectController, :update
+    delete "/buildings/:building_id/projects/:id",        ProjectController, :delete
+    post   "/buildings/:building_id/projects/:id/start-vote", ProjectController, :start_vote
+
+    # Devis nested under projects
+    post   "/buildings/:building_id/projects/:project_id/devis",              DevisController, :create
+    delete "/buildings/:building_id/projects/:project_id/devis/:id",          DevisController, :delete
+    post   "/buildings/:building_id/projects/:project_id/devis/:id/analyze", DevisController, :analyze
+
     # Documents
     get "/buildings/:building_id/documents/mandatory", DocumentController, :mandatory
     post   "/buildings/:building_id/documents/:id/archive", DocumentController, :archive
