@@ -2,10 +2,67 @@ defmodule KomunBackendWeb.AdminController do
   use KomunBackendWeb, :controller
 
   alias KomunBackend.{Accounts, Buildings}
+  alias KomunBackend.Auth.Guardian
 
   def list_users(conn, _) do
     users = Accounts.list_users()
     json(conn, %{data: Enum.map(users, &user_json/1)})
+  end
+
+  # GET /api/v1/admin/users/:id — detailed view with memberships
+  def show_user(conn, %{"id" => id}) do
+    case Accounts.get_user(id) do
+      nil ->
+        conn |> put_status(404) |> json(%{error: "User not found"})
+
+      user ->
+        memberships =
+          Buildings.list_user_buildings(user.id)
+          |> Enum.map(fn {b, role} ->
+            %{
+              building: %{id: b.id, name: b.name, address: b.address, city: b.city},
+              role: role
+            }
+          end)
+
+        json(conn, %{
+          data: Map.put(user_json(user), :memberships, memberships)
+        })
+    end
+  end
+
+  # DELETE /api/v1/admin/users/:id — delete a user account.
+  # Guardrails: a super_admin can't delete themselves (would lock out the
+  # system), and we refuse to delete the hard-coded seed super_admin.
+  def delete_user(conn, %{"id" => id}) do
+    current = Guardian.Plug.current_resource(conn)
+
+    cond do
+      to_string(current.id) == to_string(id) ->
+        conn
+        |> put_status(:forbidden)
+        |> json(%{error: "Impossible de supprimer votre propre compte."})
+
+      true ->
+        case Accounts.get_user(id) do
+          nil ->
+            conn |> put_status(404) |> json(%{error: "User not found"})
+
+          %{email: "renaudlemagicien@gmail.com"} ->
+            conn
+            |> put_status(:forbidden)
+            |> json(%{error: "Le super_admin de référence ne peut pas être supprimé."})
+
+          user ->
+            case Accounts.delete_user(user) do
+              {:ok, _} -> send_resp(conn, :no_content, "")
+              {:error, cs} ->
+                conn
+                |> put_status(:unprocessable_entity)
+                |> json(%{errors: format_errors(cs)})
+            end
+        end
+    end
   end
 
   def update_user_role(conn, %{"id" => id, "role" => role}) do
@@ -83,7 +140,12 @@ defmodule KomunBackendWeb.AdminController do
       role: user.role,
       first_name: user.first_name,
       last_name: user.last_name,
+      phone: user.phone,
       avatar_url: user.avatar_url,
+      status: user.status,
+      apartment_number: user.apartment_number,
+      floor: user.floor,
+      last_sign_in_at: user.last_sign_in_at,
       inserted_at: user.inserted_at
     }
   end
