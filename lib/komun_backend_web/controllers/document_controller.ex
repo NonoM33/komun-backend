@@ -14,6 +14,8 @@ defmodule KomunBackendWeb.DocumentController do
       file_size_bytes: d.file_size_bytes,
       mime_type: d.mime_type,
       is_pinned: d.is_pinned,
+      is_archived: d.is_archived,
+      archived_at: d.archived_at,
       has_content_text:
         is_binary(d.content_text) and String.length(String.trim(d.content_text)) > 0,
       inserted_at: d.inserted_at,
@@ -30,9 +32,23 @@ defmodule KomunBackendWeb.DocumentController do
     }
   end
 
-  def index(conn, %{"building_id" => building_id}) do
+  def index(conn, %{"building_id" => building_id} = params) do
     with :ok <- authorize_building(conn, building_id) do
-      docs = Documents.list_documents(building_id)
+      # ?archived=1 → archived-only view (managers browsing the history)
+      # ?include_archived=1 → archived + active (admin export)
+      # default → active only
+      docs =
+        cond do
+          truthy(Map.get(params, "archived")) ->
+            Documents.list_archived_documents(building_id)
+
+          truthy(Map.get(params, "include_archived")) ->
+            Documents.list_documents(building_id, include_archived: true)
+
+          true ->
+            Documents.list_documents(building_id)
+        end
+
       json(conn, %{data: Enum.map(docs, &serialize/1)})
     end
   end
@@ -137,6 +153,42 @@ defmodule KomunBackendWeb.DocumentController do
   def mandatory(conn, %{"building_id" => building_id}) do
     with :ok <- authorize_building(conn, building_id) do
       json(conn, %{data: Documents.mandatory_status(building_id)})
+    end
+  end
+
+  # POST /api/v1/buildings/:building_id/documents/:id/archive
+  def archive(conn, %{"id" => id} = _params) do
+    user = Guardian.Plug.current_resource(conn)
+    doc = Documents.get_document!(id)
+
+    with :ok <- authorize_upload(conn, doc.building_id, user) do
+      case Documents.archive_document(doc) do
+        {:ok, updated} ->
+          json(conn, %{data: serialize(KomunBackend.Repo.preload(updated, :uploaded_by))})
+
+        {:error, changeset} ->
+          conn
+          |> put_status(:unprocessable_entity)
+          |> json(%{error: format_errors(changeset)})
+      end
+    end
+  end
+
+  # DELETE /api/v1/buildings/:building_id/documents/:id/archive
+  def unarchive(conn, %{"id" => id} = _params) do
+    user = Guardian.Plug.current_resource(conn)
+    doc = Documents.get_document!(id)
+
+    with :ok <- authorize_upload(conn, doc.building_id, user) do
+      case Documents.unarchive_document(doc) do
+        {:ok, updated} ->
+          json(conn, %{data: serialize(KomunBackend.Repo.preload(updated, :uploaded_by))})
+
+        {:error, changeset} ->
+          conn
+          |> put_status(:unprocessable_entity)
+          |> json(%{error: format_errors(changeset)})
+      end
     end
   end
 

@@ -11,13 +11,46 @@ defmodule KomunBackend.Documents do
 
   def uploader_roles, do: @uploader_roles
 
-  def list_documents(building_id) do
+  def list_documents(building_id, opts \\ []) do
+    include_archived? = Keyword.get(opts, :include_archived, false)
+
+    base =
+      from(d in Document,
+        where: d.building_id == ^building_id and d.is_public == true,
+        order_by: [desc: d.is_pinned, desc: d.inserted_at],
+        preload: [:uploaded_by]
+      )
+
+    query =
+      if include_archived?, do: base, else: where(base, [d], d.is_archived == false)
+
+    Repo.all(query)
+  end
+
+  @doc "Lists archived documents only (admin / syndic review)."
+  def list_archived_documents(building_id) do
     from(d in Document,
-      where: d.building_id == ^building_id and d.is_public == true,
-      order_by: [desc: d.is_pinned, desc: d.inserted_at],
+      where:
+        d.building_id == ^building_id and d.is_public == true and
+          d.is_archived == true,
+      order_by: [desc: d.archived_at, desc: d.inserted_at],
       preload: [:uploaded_by]
     )
     |> Repo.all()
+  end
+
+  def archive_document(%Document{} = doc) do
+    now = DateTime.utc_now() |> DateTime.truncate(:second)
+
+    doc
+    |> Document.changeset(%{is_archived: true, archived_at: now, is_pinned: false})
+    |> Repo.update()
+  end
+
+  def unarchive_document(%Document{} = doc) do
+    doc
+    |> Document.changeset(%{is_archived: false, archived_at: nil})
+    |> Repo.update()
   end
 
   def list_documents_by_categories(building_id, categories) when is_list(categories) do
@@ -61,7 +94,7 @@ defmodule KomunBackend.Documents do
       from(d in Document,
         where:
           d.building_id == ^building_id and d.is_public == true and
-            d.category in ^categories,
+            d.is_archived == false and d.category in ^categories,
         group_by: d.category,
         select: {d.category, count(d.id)}
       )
@@ -98,6 +131,7 @@ defmodule KomunBackend.Documents do
       from(d in Document,
         where:
           d.building_id == ^building_id and d.is_public == true and
+            d.is_archived == false and
             not is_nil(d.content_text) and d.content_text != "",
         order_by: [desc: d.is_pinned, asc: d.category, desc: d.inserted_at],
         select: {d.title, d.category, d.content_text}

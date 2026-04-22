@@ -80,6 +80,8 @@ defmodule KomunBackendWeb.Router do
 
     # Documents
     get "/buildings/:building_id/documents/mandatory", DocumentController, :mandatory
+    post   "/buildings/:building_id/documents/:id/archive", DocumentController, :archive
+    delete "/buildings/:building_id/documents/:id/archive", DocumentController, :unarchive
     resources "/buildings/:building_id/documents", DocumentController,
       except: [:new, :edit]
 
