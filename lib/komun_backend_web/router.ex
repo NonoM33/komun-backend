@@ -113,7 +113,9 @@ defmodule KomunBackendWeb.Router do
     pipe_through [:authenticated, :require_super_admin]
 
     get    "/users",                           AdminController, :list_users
+    get    "/users/:id",                       AdminController, :show_user
     put    "/users/:id/role",                  AdminController, :update_user_role
+    delete "/users/:id",                       AdminController, :delete_user
     delete "/users/:id/onboarding",            AdminController, :reset_onboarding
     get    "/buildings",                       AdminController, :list_buildings
     post   "/buildings",                       AdminController, :create_building

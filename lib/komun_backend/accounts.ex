@@ -50,6 +50,22 @@ defmodule KomunBackend.Accounts do
     |> Repo.update()
   end
 
+  @doc """
+  Permanently deletes a user. All associations configured with
+  `on_delete: :delete_all` (building_members, incidents they reported,
+  assistant_messages, chat_messages, push tokens, etc.) cascade at the
+  DB level. Callers should gate this behind super_admin in the
+  controller — there is no policy check here.
+  """
+  def delete_user(%User{} = user), do: Repo.delete(user)
+
+  def delete_user(user_id) when is_binary(user_id) do
+    case get_user(user_id) do
+      nil -> {:error, :not_found}
+      user -> delete_user(user)
+    end
+  end
+
   def record_sign_in(user) do
     user
     |> Ecto.Changeset.change(last_sign_in_at: DateTime.utc_now() |> DateTime.truncate(:second))
