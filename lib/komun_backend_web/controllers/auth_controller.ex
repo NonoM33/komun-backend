@@ -5,9 +5,20 @@ defmodule KomunBackendWeb.AuthController do
   alias KomunBackend.Notifications.Jobs.SendMagicLinkEmailJob
 
   # POST /api/v1/auth/magic-link
-  # Body: {"email": "user@example.com"}
-  def request_magic_link(conn, %{"email" => email}) do
-    with {:ok, token} <- Accounts.create_magic_link(email) do
+  # Body: {"email": "user@example.com", "first_name": "...", "last_name": "...", "join_code": "..."}
+  #
+  # `first_name`, `last_name` and `join_code` are optional: they're the
+  # signup payload carried through a /register flow. The names populate
+  # the user profile (only if still blank) and the code auto-joins them
+  # to the matching residence when they click the link.
+  def request_magic_link(conn, %{"email" => email} = params) do
+    opts = [
+      first_name: params["first_name"],
+      last_name: params["last_name"],
+      join_code: params["join_code"]
+    ]
+
+    with {:ok, token} <- Accounts.create_magic_link(email, opts) do
       # Queue email via Oban
       %{email: email, token: token}
       |> SendMagicLinkEmailJob.new()
@@ -27,7 +38,7 @@ defmodule KomunBackendWeb.AuthController do
   # GET /api/v1/auth/magic-link/verify?token=...
   def verify_magic_link(conn, %{"token" => token}) do
     case Accounts.consume_magic_link(token) do
-      {:ok, {:ok, user}} ->
+      {:ok, %{user: user, joined_building: joined}} ->
         {:ok, access_token, _claims} = Guardian.encode_and_sign(user, %{}, ttl: {1, :hour})
         {:ok, refresh_token, _claims} = Guardian.encode_and_sign(user, %{}, token_type: "refresh", ttl: {30, :day})
 
@@ -36,7 +47,8 @@ defmodule KomunBackendWeb.AuthController do
         json(conn, %{
           access_token: access_token,
           refresh_token: refresh_token,
-          user: user_json(user)
+          user: user_json(user),
+          joined_building: building_json(joined)
         })
 
       {:error, :invalid_token} ->
@@ -99,6 +111,17 @@ defmodule KomunBackendWeb.AuthController do
       first_name: user.first_name,
       last_name: user.last_name,
       avatar_url: user.avatar_url
+    }
+  end
+
+  defp building_json(nil), do: nil
+  defp building_json(b) do
+    %{
+      id: b.id,
+      name: b.name,
+      address: b.address,
+      city: b.city,
+      postal_code: b.postal_code
     }
   end
 
