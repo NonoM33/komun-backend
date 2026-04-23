@@ -31,6 +31,10 @@ defmodule KomunBackendWeb.Router do
 
     # Invite info (public — pour afficher le nom de l'immeuble avant connexion)
     get "/invites/:token", InviteController, :show
+
+    # Public short-code check — used by /register to confirm a residence code
+    # before asking for the email.
+    get "/buildings/verify_code", BuildingController, :verify_code
   end
 
   # ── Authenticated routes ──────────────────────────────────────────────────

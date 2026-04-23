@@ -53,6 +53,36 @@ defmodule KomunBackendWeb.BuildingController do
     }})
   end
 
+  # GET /api/v1/buildings/verify_code?code=XXXXXXXX
+  # Public endpoint — no auth. Lets a prospective resident confirm the code
+  # matches a real building before creating an account via magic-link.
+  def verify_code(conn, %{"code" => code}) when is_binary(code) and code != "" do
+    case Buildings.get_building_by_join_code(code) do
+      nil ->
+        conn
+        |> put_status(:not_found)
+        |> json(%{valid: false, error: "invalid_code"})
+
+      building ->
+        json(conn, %{
+          valid: true,
+          building: %{
+            id: building.id,
+            name: building.name,
+            address: building.address,
+            city: building.city,
+            postal_code: building.postal_code
+          }
+        })
+    end
+  end
+
+  def verify_code(conn, _params) do
+    conn
+    |> put_status(:bad_request)
+    |> json(%{valid: false, error: "missing_code"})
+  end
+
   # POST /api/v1/buildings/join
   # Body: %{"code" => "A1B2C3D4"}
   #
