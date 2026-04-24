@@ -2,6 +2,7 @@ defmodule KomunBackend.Notifications.Jobs.SendMagicLinkEmailJob do
   use Oban.Worker, queue: :emails, max_attempts: 3
 
   alias KomunBackend.Mailer
+  alias KomunBackend.Notifications.EmailLayout
   import Swoosh.Email
 
   @default_base_url "https://komun.app"
@@ -13,9 +14,21 @@ defmodule KomunBackend.Notifications.Jobs.SendMagicLinkEmailJob do
     new()
     |> to(email)
     |> from({"Komun", "noreply@komun.app"})
-    |> subject("Votre lien de connexion Komun")
+    |> subject("Votre lien de connexion à Komun")
     |> html_body(build_html(email, magic_url))
-    |> text_body("Connectez-vous à Komun: #{magic_url}\n\nCe lien expire dans 15 minutes.")
+    |> text_body(
+      """
+      Se connecter à Komun
+
+      Bonjour, vous avez demandé à vous connecter avec #{email}. Ouvrez ce lien
+      pour accéder à votre espace :
+
+      #{magic_url}
+
+      Ce lien est valable 15 minutes et ne peut être utilisé qu'une fois.
+      Si vous n'êtes pas à l'origine de ce message, vous pouvez l'ignorer.
+      """
+    )
     |> Mailer.deliver()
 
     :ok
@@ -25,27 +38,21 @@ defmodule KomunBackend.Notifications.Jobs.SendMagicLinkEmailJob do
     System.get_env("APP_BASE_URL", @default_base_url)
   end
 
+  # Source de vérité du design : `web_v2/src/emails/registry.ts` (template
+  # `magicLinkTemplate`). Si on change l'un, on recopie dans l'autre pour
+  # que la preview admin corresponde à ce qu'on envoie vraiment.
   defp build_html(email, url) do
-    """
-    <!DOCTYPE html>
-    <html>
-    <body style="font-family: Inter, sans-serif; max-width: 480px; margin: 0 auto; padding: 40px 20px;">
-      <h1 style="color: #1E4FD8; font-size: 24px;">Connexion à Komun</h1>
-      <p>Bonjour #{email},</p>
-      <p>Cliquez sur le bouton ci-dessous pour vous connecter à votre espace Komun :</p>
-      <a href="#{url}"
-         style="display: inline-block; background: #1E4FD8; color: white; padding: 14px 28px;
-                border-radius: 8px; text-decoration: none; font-weight: 600; margin: 20px 0;">
-        Se connecter
-      </a>
-      <p style="color: #64748B; font-size: 13px;">
-        Ou copiez ce lien dans votre navigateur :<br>
-        <a href="#{url}" style="color: #1E4FD8; word-break: break-all;">#{url}</a>
-      </p>
-      <p style="color: #64748B; font-size: 14px;">Ce lien expire dans <strong>15 minutes</strong>.</p>
-      <p style="color: #64748B; font-size: 12px;">Si vous n'avez pas demandé ce lien, ignorez cet email.</p>
-    </body>
-    </html>
-    """
+    EmailLayout.render(
+      preheader: "Un clic pour accéder à votre espace Komun — valable 15 min.",
+      body:
+        EmailLayout.h1("Se connecter à Komun") <>
+          EmailLayout.p(
+            "Bonjour, vous avez demandé à vous connecter avec <strong>#{EmailLayout.escape(email)}</strong>. Cliquez sur le bouton ci-dessous pour ouvrir votre espace."
+          ) <>
+          EmailLayout.cta_button(url, "Ouvrir Komun") <>
+          EmailLayout.muted(
+            ~s(Ce lien est valable 15 minutes et ne peut être utilisé qu'une fois. Si le bouton ne fonctionne pas, copiez-collez cette adresse dans votre navigateur :<br /><a href="#{EmailLayout.escape(url)}" style="color:#B24939;word-break:break-all">#{EmailLayout.escape(url)}</a>)
+          )
+    )
   end
 end
