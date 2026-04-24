@@ -14,6 +14,22 @@ defmodule KomunBackendWeb.AuthMagicLinkSignupTest do
       |> Organization.changeset(%{name: "Org #{System.unique_integer([:positive])}"})
       |> Repo.insert()
 
+    # Depuis l'introduction des résidences, chaque bâtiment doit avoir
+    # une `residence_id`. On en crée une dédiée par fixture.
+    residence_code =
+      "R" <>
+        (System.unique_integer([:positive])
+         |> Integer.to_string()
+         |> String.pad_leading(7, "0"))
+
+    {:ok, residence} =
+      %KomunBackend.Residences.Residence{}
+      |> KomunBackend.Residences.Residence.changeset(%{
+        name: "Résidence #{code}",
+        join_code: residence_code
+      })
+      |> Repo.insert()
+
     %Building{}
     |> Building.changeset(%{
       name: "La Garenne",
@@ -21,6 +37,7 @@ defmodule KomunBackendWeb.AuthMagicLinkSignupTest do
       city: "Lyon",
       postal_code: "69001",
       organization_id: org.id,
+      residence_id: residence.id,
       join_code: code
     })
     |> Repo.insert!()

@@ -21,6 +21,34 @@ defmodule KomunBackend.AccountsMagicLinkTest do
   end
 
   defp insert_building!(org, attrs \\ %{}) do
+    # Depuis l'introduction des résidences, chaque bâtiment doit avoir
+    # une `residence_id`. Si le test n'en fournit pas, on en crée une
+    # dédiée. Le code résidence est distinct du code bâtiment pour
+    # éviter les collisions sur l'unique_index.
+    residence_id =
+      case Map.get(attrs, :residence_id) do
+        nil ->
+          residence_code =
+            "R" <>
+              (System.unique_integer([:positive])
+               |> Integer.to_string()
+               |> String.pad_leading(7, "0"))
+
+          {:ok, r} =
+            %KomunBackend.Residences.Residence{}
+            |> KomunBackend.Residences.Residence.changeset(%{
+              name: "Résidence #{System.unique_integer([:positive])}",
+              join_code: residence_code,
+              organization_id: org.id
+            })
+            |> Repo.insert()
+
+          r.id
+
+        id ->
+          id
+      end
+
     %Building{}
     |> Building.changeset(
       Map.merge(
@@ -30,6 +58,7 @@ defmodule KomunBackend.AccountsMagicLinkTest do
           city: "Paris",
           postal_code: "75001",
           organization_id: org.id,
+          residence_id: residence_id,
           join_code: Map.get(attrs, :join_code, Buildings.generate_join_code())
         },
         attrs
@@ -106,6 +135,28 @@ defmodule KomunBackend.AccountsMagicLinkTest do
       {:ok, token} = Accounts.create_magic_link("once@example.com")
       assert {:ok, %{user: _}} = Accounts.consume_magic_link(token)
       assert {:error, :invalid_token} = Accounts.consume_magic_link(token)
+    end
+
+    test "requesting a second link invalidates the first one for the same email" do
+      # Répro du bug "Pascale" : un user a fait le formulaire register, a
+      # redemandé un lien depuis /login et a cliqué par erreur sur le
+      # premier email. Attendu : le vieux token n'est plus valide, seul
+      # le plus récent l'est.
+      {:ok, token_1} = Accounts.create_magic_link("pascale@example.com")
+      {:ok, token_2} = Accounts.create_magic_link("pascale@example.com")
+
+      assert {:error, :invalid_token} = Accounts.consume_magic_link(token_1)
+      assert {:ok, %{user: _}} = Accounts.consume_magic_link(token_2)
+    end
+
+    test "invalidation is scoped to the email (other users unaffected)" do
+      {:ok, token_other} = Accounts.create_magic_link("other@example.com")
+      {:ok, _token_mine_1} = Accounts.create_magic_link("mine@example.com")
+      {:ok, _token_mine_2} = Accounts.create_magic_link("mine@example.com")
+
+      # Le token de l'autre email est intact.
+      assert {:ok, %{user: %User{email: "other@example.com"}}} =
+               Accounts.consume_magic_link(token_other)
     end
   end
 
