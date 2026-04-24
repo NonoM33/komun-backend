@@ -5,17 +5,40 @@ defmodule KomunBackendWeb.AuthController do
   alias KomunBackend.Notifications.Jobs.SendMagicLinkEmailJob
 
   # POST /api/v1/auth/magic-link
-  # Body: {"email": "user@example.com", "first_name": "...", "last_name": "...", "join_code": "..."}
+  # Body: {"email": "user@example.com", "first_name": "...", "last_name": "...",
+  #        "join_code": "...", "building_id": "..."}
   #
-  # `first_name`, `last_name` and `join_code` are optional: they're the
-  # signup payload carried through a /register flow. The names populate
-  # the user profile (only if still blank) and the code auto-joins them
-  # to the matching residence when they click the link.
+  # `first_name`, `last_name`, `join_code` et `building_id` sont optionnels :
+  # ils forment le payload de signup transporté dans le flow /register. Les
+  # noms remplissent le profil si blanc, et on auto-join à l'inscription :
+  # - Si `building_id` est fourni → on le résout côté serveur en son code
+  #   bâtiment (le user vient de le choisir dans la page d'inscription après
+  #   avoir tapé un code résidence).
+  # - Sinon `join_code` est utilisé tel quel (typiquement un code bâtiment
+  #   direct, ou un code résidence mono-bâtiment).
   def request_magic_link(conn, %{"email" => email} = params) do
+    resolved_code =
+      case params["building_id"] do
+        bid when is_binary(bid) and bid != "" ->
+          # Safe lookup — un building_id invalide (uuid mal formé, ID disparu)
+          # ne doit pas faire tomber l'endpoint magic-link.
+          try do
+            case KomunBackend.Repo.get(KomunBackend.Buildings.Building, bid) do
+              %{join_code: code} when is_binary(code) -> code
+              _ -> params["join_code"]
+            end
+          rescue
+            _ -> params["join_code"]
+          end
+
+        _ ->
+          params["join_code"]
+      end
+
     opts = [
       first_name: params["first_name"],
       last_name: params["last_name"],
-      join_code: params["join_code"]
+      join_code: resolved_code
     ]
 
     with {:ok, token} <- Accounts.create_magic_link(email, opts) do
