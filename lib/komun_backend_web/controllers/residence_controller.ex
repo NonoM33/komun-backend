@@ -136,6 +136,48 @@ defmodule KomunBackendWeb.ResidenceController do
     end
   end
 
+  # DELETE /api/v1/residences/:id
+  # Soft-delete : on marque is_active=false. On refuse si la résidence
+  # contient encore des bâtiments actifs pour éviter de rendre des
+  # bâtiments orphelins sans prévenir.
+  def delete(conn, %{"id" => id}) do
+    user = Guardian.Plug.current_resource(conn)
+
+    case Residences.get_residence(id) do
+      nil ->
+        conn |> put_status(:not_found) |> json(%{error: "not_found"})
+
+      %Residence{} = residence ->
+        if authorized_for?(user, residence) do
+          residence = KomunBackend.Repo.preload(residence, :buildings)
+          active_buildings = Enum.filter(residence.buildings, & &1.is_active)
+
+          cond do
+            length(active_buildings) > 0 ->
+              conn
+              |> put_status(:unprocessable_entity)
+              |> json(%{
+                error: "not_empty",
+                message:
+                  "Cette résidence contient encore des bâtiments. " <>
+                    "Déplacez-les avant de supprimer la résidence."
+              })
+
+            true ->
+              case Residences.delete_residence(residence) do
+                {:ok, _} -> json(conn, %{ok: true})
+                {:error, cs} ->
+                  conn
+                  |> put_status(:unprocessable_entity)
+                  |> json(%{errors: format_errors(cs)})
+              end
+          end
+        else
+          conn |> put_status(:forbidden) |> json(%{error: "forbidden"})
+        end
+    end
+  end
+
   # POST /api/v1/residences/:id/buildings/:building_id/attach
   def attach_building(conn, %{"id" => residence_id, "building_id" => building_id}) do
     user = Guardian.Plug.current_resource(conn)
