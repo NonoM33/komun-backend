@@ -109,6 +109,60 @@ defmodule KomunBackend.Residences do
   end
 
   @doc """
+  Liste tous les membres actifs d'une résidence, agrégés à travers
+  tous ses bâtiments, dédupliqués par user_id. Le rôle remonté est le
+  plus privilégié que l'user a dans la résidence (ex. `president_cs`
+  prime sur `coproprietaire`).
+
+  Usage : page "Voisins" côté front, qui doit afficher toutes les
+  personnes de la copropriété — pas seulement celles du bâtiment
+  courant du viewer.
+  """
+  def list_residence_members(residence_id) do
+    # Priorité des rôles — plus haut = plus privilégié. Quand un user
+    # est dans plusieurs bâtiments de la résidence avec des rôles
+    # différents, on remonte le plus élevé.
+    role_priority = fn role ->
+      case role do
+        :syndic_manager -> 100
+        :syndic_staff -> 90
+        :president_cs -> 80
+        :membre_cs -> 70
+        :council -> 65
+        :super_admin -> 60
+        :coproprietaire -> 50
+        :locataire -> 40
+        :gardien -> 30
+        :prestataire -> 20
+        _ -> 0
+      end
+    end
+
+    rows =
+      from(m in BuildingMember,
+        join: b in Building,
+        on: b.id == m.building_id,
+        where:
+          b.residence_id == ^residence_id and
+            b.is_active == true and
+            m.is_active == true,
+        preload: :user
+      )
+      |> Repo.all()
+
+    rows
+    |> Enum.group_by(& &1.user_id)
+    |> Enum.map(fn {_uid, memberships} ->
+      # Pick the most privileged membership for this user
+      Enum.max_by(memberships, fn m -> role_priority.(m.role) end)
+    end)
+    |> Enum.sort_by(fn m ->
+      {-role_priority.(m.role),
+       String.downcase(m.user.last_name || m.user.email || "")}
+    end)
+  end
+
+  @doc """
   Absorbe toutes les résidences sources dans la résidence cible :
   déplace chaque bâtiment actif vers la cible, puis soft-delete les
   résidences sources une fois qu'elles sont vides.

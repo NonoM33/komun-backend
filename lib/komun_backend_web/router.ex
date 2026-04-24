@@ -64,6 +64,7 @@ defmodule KomunBackendWeb.Router do
     put    "/residences/:id",                             ResidenceController, :update
     delete "/residences/:id",                             ResidenceController, :delete
     post   "/residences/:id/merge",                       ResidenceController, :merge
+    get    "/residences/:id/members",                     ResidenceController, :members
     post   "/residences/:id/buildings/:building_id/attach",
                                                           ResidenceController, :attach_building
 
