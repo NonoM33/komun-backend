@@ -16,6 +16,7 @@ defmodule KomunBackend.Assistant.AssistantMessage do
 
     belongs_to :building, KomunBackend.Buildings.Building
     belongs_to :user, KomunBackend.Accounts.User
+    belongs_to :conversation, KomunBackend.Assistant.Conversation
 
     timestamps(type: :utc_datetime)
   end
@@ -31,7 +32,8 @@ defmodule KomunBackend.Assistant.AssistantMessage do
       :status,
       :error,
       :building_id,
-      :user_id
+      :user_id,
+      :conversation_id
     ])
     |> validate_required([:question, :building_id, :user_id])
     |> validate_length(:question, min: 3, max: 2000)
