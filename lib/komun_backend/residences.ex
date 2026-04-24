@@ -1,0 +1,177 @@
+defmodule KomunBackend.Residences do
+  @moduledoc """
+  Contexte **Résidences** — la copropriété vue comme entité qui regroupe
+  un ou plusieurs bâtiments.
+
+  Deux niveaux d'invitation :
+  - `join_code` de la résidence → l'user choisit son bâtiment à l'inscription
+  - `join_code` du bâtiment → join direct
+
+  `verify_code/1` résout un code en un de ces deux types sans que le caller
+  ait besoin de savoir lequel c'est.
+  """
+
+  import Ecto.Query
+  alias KomunBackend.Repo
+  alias KomunBackend.Residences.Residence
+  alias KomunBackend.Buildings
+  alias KomunBackend.Buildings.{Building, BuildingMember}
+
+  # ── Codes (mêmes règles que Buildings pour rester cohérents) ─────────────
+
+  @join_code_alphabet ~c"ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
+  @join_code_length 8
+
+  def generate_join_code do
+    for _ <- 1..@join_code_length, into: "" do
+      <<Enum.random(@join_code_alphabet)>>
+    end
+  end
+
+  # ── Résidences — CRUD de base ─────────────────────────────────────────────
+
+  def get_residence!(id), do: Repo.get!(Residence, id)
+
+  def get_residence(id), do: Repo.get(Residence, id)
+
+  def get_residence_with_buildings!(id) do
+    Residence
+    |> Repo.get!(id)
+    |> Repo.preload(buildings: from(b in Building, where: b.is_active == true, order_by: [asc: b.name]))
+  end
+
+  def get_residence_by_join_code(code) when is_binary(code) do
+    normalized = code |> String.trim() |> String.upcase()
+
+    from(r in Residence,
+      where: r.join_code == ^normalized and r.is_active == true
+    )
+    |> Repo.one()
+  end
+
+  def get_residence_by_join_code(_), do: nil
+
+  def list_user_residences(user_id) do
+    # Une résidence est "à l'user" si au moins un de ses bâtiments l'a comme
+    # membre. On déduplique en GROUP BY et on remonte le rôle le plus privilégié
+    # qu'il a dans cette résidence.
+    from(r in Residence,
+      join: b in Building,
+      on: b.residence_id == r.id,
+      join: m in BuildingMember,
+      on: m.building_id == b.id and m.user_id == ^user_id and m.is_active == true,
+      where: r.is_active == true,
+      distinct: r.id,
+      select: r
+    )
+    |> Repo.all()
+    |> Repo.preload(
+      buildings:
+        from(b in Building,
+          where: b.is_active == true,
+          order_by: [asc: b.name]
+        )
+    )
+  end
+
+  def list_all_residences do
+    Residence
+    |> where([r], r.is_active == true)
+    |> order_by(asc: :name)
+    |> Repo.all()
+    |> Repo.preload(
+      buildings:
+        from(b in Building,
+          where: b.is_active == true,
+          order_by: [asc: b.name]
+        )
+    )
+  end
+
+  def create_residence(attrs) do
+    %Residence{}
+    |> Residence.changeset(ensure_join_code(attrs))
+    |> Repo.insert()
+  end
+
+  def update_residence(%Residence{} = residence, attrs) do
+    residence
+    |> Residence.changeset(attrs)
+    |> Repo.update()
+  end
+
+  def delete_residence(%Residence{} = residence) do
+    # Soft-delete : on désactive plutôt que de supprimer pour préserver les
+    # références historiques (incidents, documents, etc.).
+    residence
+    |> Ecto.Changeset.change(is_active: false)
+    |> Repo.update()
+  end
+
+  # ── Rattachement de bâtiments ─────────────────────────────────────────────
+
+  @doc """
+  Rattache un bâtiment à une résidence. On vérifie simplement que les deux
+  existent — le caller (controller) est responsable de la permission.
+  """
+  def attach_building(residence_id, building_id) do
+    case Buildings.get_building!(building_id) do
+      %Building{} = building ->
+        building
+        |> Ecto.Changeset.change(residence_id: residence_id)
+        |> Repo.update()
+    end
+  rescue
+    Ecto.NoResultsError -> {:error, :not_found}
+  end
+
+  # ── Verify unifié (résidence OU bâtiment) ────────────────────────────────
+
+  @doc """
+  Résout un code en résidence (→ liste de bâtiments à choisir) ou en
+  bâtiment direct (→ join one-click).
+
+  Retourne :
+  - `{:residence, residence, buildings}` — code résidence valide
+  - `{:building, building, residence}` — code bâtiment valide
+  - `:not_found` — aucun code ne matche
+  """
+  def verify_code(code) when is_binary(code) do
+    normalized = code |> String.trim() |> String.upcase()
+
+    case get_residence_by_join_code(normalized) do
+      %Residence{} = residence ->
+        residence = Repo.preload(residence,
+          buildings: from(b in Building, where: b.is_active == true, order_by: [asc: b.name])
+        )
+
+        {:residence, residence, residence.buildings}
+
+      nil ->
+        case Buildings.get_building_by_join_code(normalized) do
+          %Building{} = building ->
+            residence =
+              if building.residence_id, do: get_residence(building.residence_id), else: nil
+
+            {:building, building, residence}
+
+          nil ->
+            :not_found
+        end
+    end
+  end
+
+  def verify_code(_), do: :not_found
+
+  # ── Helpers internes ──────────────────────────────────────────────────────
+
+  defp ensure_join_code(attrs) when is_map(attrs) do
+    has_code? = Map.has_key?(attrs, :join_code) or Map.has_key?(attrs, "join_code")
+
+    cond do
+      has_code? -> attrs
+      Map.has_key?(attrs, :name) -> Map.put(attrs, :join_code, generate_join_code())
+      true -> Map.put(attrs, "join_code", generate_join_code())
+    end
+  end
+end

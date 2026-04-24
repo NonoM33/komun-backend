@@ -1,0 +1,241 @@
+defmodule KomunBackendWeb.ResidenceController do
+  use KomunBackendWeb, :controller
+
+  alias KomunBackend.Residences
+  alias KomunBackend.Residences.Residence
+
+  @privileged_roles [:president_cs, :membre_cs, :syndic_manager, :syndic_staff, :council]
+
+  # ── Listing ────────────────────────────────────────────────────────────────
+
+  # GET /api/v1/residences  (authentifié)
+  # Retourne les résidences de l'utilisateur courant, avec les bâtiments
+  # rattachés. Super admin voit tout.
+  def index(conn, _params) do
+    user = Guardian.Plug.current_resource(conn)
+
+    residences =
+      if user.role == :super_admin do
+        Residences.list_all_residences()
+      else
+        Residences.list_user_residences(user.id)
+      end
+
+    json(conn, %{data: Enum.map(residences, &residence_json(&1, user))})
+  end
+
+  # GET /api/v1/residences/:id
+  def show(conn, %{"id" => id}) do
+    user = Guardian.Plug.current_resource(conn)
+
+    case Residences.get_residence(id) do
+      nil ->
+        conn |> put_status(:not_found) |> json(%{error: "not_found"})
+
+      residence ->
+        residence = KomunBackend.Repo.preload(residence, :buildings)
+        json(conn, %{data: residence_json(residence, user)})
+    end
+  end
+
+  # ── Public verify (résidence OU bâtiment) ─────────────────────────────────
+  #
+  # GET /api/v1/codes/verify?code=XXXXXXXX
+  #
+  # Une route publique unifiée : on donne un code à la page d'inscription
+  # sans savoir si c'est un code résidence ou bâtiment, le backend tranche.
+  def verify_code(conn, %{"code" => code}) when is_binary(code) and code != "" do
+    case Residences.verify_code(code) do
+      {:residence, residence, buildings} ->
+        json(conn, %{
+          valid: true,
+          type: "residence",
+          residence: residence_summary(residence),
+          buildings:
+            Enum.map(buildings, fn b ->
+              %{
+                id: b.id,
+                name: b.name,
+                address: b.address,
+                city: b.city,
+                postal_code: b.postal_code,
+                lot_count: b.lot_count
+              }
+            end)
+        })
+
+      {:building, building, residence} ->
+        json(conn, %{
+          valid: true,
+          type: "building",
+          building: %{
+            id: building.id,
+            name: building.name,
+            address: building.address,
+            city: building.city,
+            postal_code: building.postal_code,
+            lot_count: building.lot_count
+          },
+          residence: if(residence, do: residence_summary(residence), else: nil)
+        })
+
+      :not_found ->
+        conn
+        |> put_status(:not_found)
+        |> json(%{valid: false, error: "invalid_code"})
+    end
+  end
+
+  def verify_code(conn, _params) do
+    conn
+    |> put_status(:bad_request)
+    |> json(%{valid: false, error: "missing_code"})
+  end
+
+  # ── Create / update (admin ou CS) ─────────────────────────────────────────
+
+  def create(conn, params) do
+    user = Guardian.Plug.current_resource(conn)
+
+    if user.role == :super_admin or user.role in @privileged_roles do
+      case Residences.create_residence(params) do
+        {:ok, residence} ->
+          conn
+          |> put_status(:created)
+          |> json(%{data: residence_json(residence, user)})
+
+        {:error, changeset} ->
+          conn
+          |> put_status(:unprocessable_entity)
+          |> json(%{errors: format_errors(changeset)})
+      end
+    else
+      conn |> put_status(:forbidden) |> json(%{error: "forbidden"})
+    end
+  end
+
+  def update(conn, %{"id" => id} = params) do
+    user = Guardian.Plug.current_resource(conn)
+
+    case Residences.get_residence(id) do
+      nil ->
+        conn |> put_status(:not_found) |> json(%{error: "not_found"})
+
+      %Residence{} = residence ->
+        if authorized_for?(user, residence) do
+          attrs = Map.drop(params, ["id"])
+
+          case Residences.update_residence(residence, attrs) do
+            {:ok, updated} -> json(conn, %{data: residence_json(updated, user)})
+            {:error, cs} ->
+              conn |> put_status(:unprocessable_entity) |> json(%{errors: format_errors(cs)})
+          end
+        else
+          conn |> put_status(:forbidden) |> json(%{error: "forbidden"})
+        end
+    end
+  end
+
+  # POST /api/v1/residences/:id/buildings/:building_id/attach
+  def attach_building(conn, %{"id" => residence_id, "building_id" => building_id}) do
+    user = Guardian.Plug.current_resource(conn)
+
+    case Residences.get_residence(residence_id) do
+      nil ->
+        conn |> put_status(:not_found) |> json(%{error: "residence_not_found"})
+
+      %Residence{} = residence ->
+        if authorized_for?(user, residence) do
+          case Residences.attach_building(residence.id, building_id) do
+            {:ok, _building} ->
+              residence = KomunBackend.Repo.preload(residence, :buildings, force: true)
+              json(conn, %{data: residence_json(residence, user)})
+
+            {:error, :not_found} ->
+              conn |> put_status(:not_found) |> json(%{error: "building_not_found"})
+
+            {:error, cs} ->
+              conn |> put_status(:unprocessable_entity) |> json(%{errors: format_errors(cs)})
+          end
+        else
+          conn |> put_status(:forbidden) |> json(%{error: "forbidden"})
+        end
+    end
+  end
+
+  # ── Helpers ───────────────────────────────────────────────────────────────
+
+  defp authorized_for?(user, _residence) do
+    # Pour l'instant : super_admin + rôles CS/syndic. Le scoping "seulement
+    # les résidences où l'user a vraiment un rôle" viendra quand on aura
+    # besoin de passer du CS d'une résidence à une autre (multi-copro).
+    user.role == :super_admin or user.role in @privileged_roles
+  end
+
+  defp residence_json(%Residence{} = r, user) do
+    buildings =
+      case r.buildings do
+        %Ecto.Association.NotLoaded{} -> []
+        list when is_list(list) -> list
+      end
+
+    base = %{
+      id: r.id,
+      name: r.name,
+      slug: r.slug,
+      address: r.address,
+      city: r.city,
+      postal_code: r.postal_code,
+      country: r.country,
+      cover_url: r.cover_url,
+      organization_id: r.organization_id,
+      is_active: r.is_active,
+      buildings:
+        buildings
+        |> Enum.filter(& &1.is_active)
+        |> Enum.map(&building_json(&1, user))
+    }
+
+    if user.role == :super_admin or user.role in @privileged_roles do
+      Map.put(base, :join_code, r.join_code)
+    else
+      base
+    end
+  end
+
+  defp residence_summary(%Residence{} = r) do
+    %{
+      id: r.id,
+      name: r.name,
+      address: r.address,
+      city: r.city,
+      postal_code: r.postal_code
+    }
+  end
+
+  defp building_json(b, user) do
+    base = %{
+      id: b.id,
+      name: b.name,
+      address: b.address,
+      city: b.city,
+      postal_code: b.postal_code,
+      lot_count: b.lot_count,
+      cover_url: b.cover_url
+    }
+
+    if user.role == :super_admin or user.role in @privileged_roles do
+      Map.put(base, :join_code, b.join_code)
+    else
+      base
+    end
+  end
+
+  defp format_errors(changeset) do
+    Ecto.Changeset.traverse_errors(changeset, fn {msg, opts} ->
+      Enum.reduce(opts, msg, fn {key, value}, acc ->
+        String.replace(acc, "%{#{key}}", to_string(value))
+      end)
+    end)
+  end
+end

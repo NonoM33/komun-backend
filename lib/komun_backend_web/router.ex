@@ -34,6 +34,12 @@ defmodule KomunBackendWeb.Router do
 
     # Public short-code check — used by /register to confirm a residence code
     # before asking for the email.
+    #
+    # `/codes/verify` est le nouveau endpoint unifié : il résout un code en
+    # résidence (→ liste de bâtiments) ou en bâtiment (→ join direct) sans
+    # que le frontend ait à savoir ce qu'il tient. L'ancien endpoint
+    # `/buildings/verify_code` reste en place pour la rétrocompat.
+    get "/codes/verify", ResidenceController, :verify_code
     get "/buildings/verify_code", BuildingController, :verify_code
   end
 
@@ -49,6 +55,15 @@ defmodule KomunBackendWeb.Router do
     # Organizations
     get  "/organizations/:id", OrganizationController, :show
     get  "/organizations/:id/buildings", OrganizationController, :buildings
+
+    # Residences — copropriété parent des bâtiments
+    get    "/residences",                                 ResidenceController, :index
+    post   "/residences",                                 ResidenceController, :create
+    get    "/residences/:id",                             ResidenceController, :show
+    patch  "/residences/:id",                             ResidenceController, :update
+    put    "/residences/:id",                             ResidenceController, :update
+    post   "/residences/:id/buildings/:building_id/attach",
+                                                          ResidenceController, :attach_building
 
     # Buildings
     get    "/buildings", BuildingController, :index

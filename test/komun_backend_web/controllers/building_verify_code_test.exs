@@ -5,6 +5,7 @@ defmodule KomunBackendWeb.BuildingVerifyCodeTest do
   alias KomunBackend.Buildings
   alias KomunBackend.Buildings.Building
   alias KomunBackend.Organizations.Organization
+  alias KomunBackend.Residences.Residence
 
   defp insert_building!(code) do
     {:ok, org} =
@@ -12,13 +13,31 @@ defmodule KomunBackendWeb.BuildingVerifyCodeTest do
       |> Organization.changeset(%{name: "Org #{System.unique_integer([:positive])}"})
       |> Repo.insert()
 
+    # Depuis l'introduction des résidences, chaque bâtiment doit en avoir
+    # une. Le code résidence est distinct du code bâtiment pour éviter les
+    # collisions sur l'unique_index.
+    residence_code =
+      "R" <>
+        (System.unique_integer([:positive])
+         |> Integer.to_string()
+         |> String.pad_leading(7, "0"))
+
+    {:ok, residence} =
+      %Residence{}
+      |> Residence.changeset(%{
+        name: "Résidence Test #{code}",
+        join_code: residence_code
+      })
+      |> Repo.insert()
+
     %Building{}
     |> Building.changeset(%{
-      name: "Résidence Test",
+      name: "Bâtiment Test",
       address: "10 rue des Lilas",
       city: "Paris",
       postal_code: "75001",
       organization_id: org.id,
+      residence_id: residence.id,
       join_code: code
     })
     |> Repo.insert!()
