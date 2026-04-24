@@ -4,6 +4,7 @@ defmodule KomunBackend.Accounts do
   import Ecto.Query
   alias KomunBackend.Repo
   alias KomunBackend.Accounts.{User, MagicLink}
+  alias KomunBackend.Audit
   alias KomunBackend.Buildings
 
   @super_admin_email "renaudlemagicien@gmail.com"
@@ -38,10 +39,40 @@ defmodule KomunBackend.Accounts do
     Repo.all(User)
   end
 
-  def update_user_role(user_id, role) do
+  @doc """
+  Met à jour le rôle global d'un utilisateur. Trace la mutation dans
+  `role_audit_log` (cf. `KomunBackend.Audit`).
+
+  Options :
+  - `:source` (atom) — origine, default `:admin_panel`
+  - `:actor_id` — qui a déclenché (admin)
+  - `:metadata` — map libre (ex: request_id, IP)
+  """
+  def update_user_role(user_id, role, opts \\ []) do
     case Repo.get(User, user_id) do
-      nil -> {:error, :not_found}
-      user -> user |> User.changeset(%{role: role}) |> Repo.update()
+      nil ->
+        {:error, :not_found}
+
+      %User{role: current_role} = user ->
+        result = user |> User.changeset(%{role: role}) |> Repo.update()
+
+        case result do
+          {:ok, updated} ->
+            Audit.record_role_change(%{
+              scope: :global,
+              source: Keyword.get(opts, :source, :admin_panel),
+              user_id: updated.id,
+              old_role: current_role,
+              new_role: updated.role,
+              actor_id: Keyword.get(opts, :actor_id),
+              metadata: Keyword.get(opts, :metadata, %{})
+            })
+
+            {:ok, updated}
+
+          {:error, _} = err ->
+            err
+        end
     end
   end
 

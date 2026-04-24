@@ -190,7 +190,8 @@ defmodule KomunBackendWeb.Router do
     delete "/users/:id/onboarding",            AdminController, :reset_onboarding
     get    "/buildings",                       AdminController, :list_buildings
     post   "/buildings",                       AdminController, :create_building
-    post   "/buildings/:id/members",           AdminController, :add_member
-    delete "/buildings/:id/members/:user_id",  AdminController, :remove_member
+    post   "/buildings/:id/members",                  AdminController, :add_member
+    put    "/buildings/:id/members/:user_id/role",    AdminController, :update_member_role
+    delete "/buildings/:id/members/:user_id",         AdminController, :remove_member
   end
 end

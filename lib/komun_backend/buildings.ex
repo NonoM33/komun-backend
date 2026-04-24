@@ -3,6 +3,7 @@ defmodule KomunBackend.Buildings do
 
   import Ecto.Query
   alias KomunBackend.Repo
+  alias KomunBackend.Audit
   alias KomunBackend.Buildings.{Building, BuildingInvite, BuildingMember, Lot}
 
   def list_buildings(org_id) do
@@ -161,24 +162,151 @@ defmodule KomunBackend.Buildings do
     |> Repo.all()
   end
 
-  def add_member(building_id, user_id, role \\ :coproprietaire) do
-    %BuildingMember{}
-    |> BuildingMember.changeset(%{
-      building_id: building_id,
-      user_id: user_id,
-      role: role,
-      joined_at: DateTime.utc_now() |> DateTime.truncate(:second)
-    })
-    |> Repo.insert(
-      on_conflict: {:replace, [:role, :is_active, :joined_at, :updated_at]},
-      conflict_target: [:building_id, :user_id]
+  @doc """
+  Insère un nouveau membre. Retourne `{:error, :already_member}` si une
+  ligne existe déjà pour `(building_id, user_id)` (active ou non).
+
+  Le **changement de rôle** d'un membre existant doit passer par
+  `set_member_role/4` — l'upsert destructif d'avant écrasait
+  silencieusement le rôle (`president_cs` → `coproprietaire`) quand un
+  caller appelait `add_member` avec le default. Voir le bug "rôles
+  disparus au redéploiement" : la séparation insert / update est la
+  défense en profondeur contre cette classe de régression.
+
+  Options :
+  - `:source` (atom) — origine de la mutation (cf. `KomunBackend.Audit`).
+    Default `:manual`. Trace une ligne dans `role_audit_log`.
+  - `:actor_id` — id de l'utilisateur qui a déclenché l'action (admin
+    typiquement).
+  - `:metadata` — map libre attachée à la trace.
+  """
+  def add_member(building_id, user_id, role \\ :coproprietaire, opts \\ []) do
+    case Repo.get_by(BuildingMember, building_id: building_id, user_id: user_id) do
+      nil ->
+        result =
+          %BuildingMember{}
+          |> BuildingMember.changeset(%{
+            building_id: building_id,
+            user_id: user_id,
+            role: role,
+            is_active: true,
+            joined_at: DateTime.utc_now() |> DateTime.truncate(:second)
+          })
+          |> Repo.insert()
+
+        case result do
+          {:ok, member} ->
+            audit_role_change(opts, %{
+              scope: :building,
+              user_id: user_id,
+              building_id: building_id,
+              old_role: nil,
+              new_role: member.role
+            })
+
+            {:ok, member}
+
+          {:error, _} = err ->
+            err
+        end
+
+      _existing ->
+        {:error, :already_member}
+    end
+  end
+
+  @doc """
+  Met à jour le rôle d'un membre existant. Refuse `{:error, :not_found}`
+  si la ligne n'existe pas — c'est volontaire : un changement de rôle ne
+  doit jamais aussi servir d'insertion implicite.
+
+  Réactive aussi la ligne (`is_active: true`) au passage, par cohérence
+  avec l'idée que "set_role" implique que le membre est dans le
+  bâtiment.
+
+  Options : voir `add_member/4`.
+  """
+  def set_member_role(building_id, user_id, new_role, opts \\ []) do
+    case Repo.get_by(BuildingMember, building_id: building_id, user_id: user_id) do
+      nil ->
+        {:error, :not_found}
+
+      %BuildingMember{role: current_role} = member ->
+        result =
+          member
+          |> BuildingMember.changeset(%{role: new_role, is_active: true})
+          |> Repo.update()
+
+        case result do
+          {:ok, updated} ->
+            audit_role_change(opts, %{
+              scope: :building,
+              user_id: user_id,
+              building_id: building_id,
+              old_role: current_role,
+              new_role: updated.role
+            })
+
+            {:ok, updated}
+
+          {:error, _} = err ->
+            err
+        end
+    end
+  end
+
+  @doc """
+  Réactive un membre soft-désactivé sans toucher à son rôle. Utilisé par
+  `join_by_code/3` quand on retrouve un ancien membre `is_active: false`
+  — on ne veut **surtout pas** écraser son rôle d'origine en le
+  re-insérant avec un default.
+  """
+  def reactivate_member(building_id, user_id) do
+    case Repo.get_by(BuildingMember, building_id: building_id, user_id: user_id) do
+      nil ->
+        {:error, :not_found}
+
+      %BuildingMember{is_active: true} = member ->
+        {:ok, member}
+
+      member ->
+        member
+        |> Ecto.Changeset.change(is_active: true)
+        |> Repo.update()
+    end
+  end
+
+  defp audit_role_change(opts, base_attrs) do
+    Audit.record_role_change(
+      Map.merge(base_attrs, %{
+        source: Keyword.get(opts, :source, :manual),
+        actor_id: Keyword.get(opts, :actor_id),
+        metadata: Keyword.get(opts, :metadata, %{})
+      })
     )
   end
 
-  def remove_member(building_id, user_id) do
+  def remove_member(building_id, user_id, opts \\ []) do
     case Repo.get_by(BuildingMember, building_id: building_id, user_id: user_id) do
-      nil -> {:error, :not_found}
-      member -> Repo.delete(member)
+      nil ->
+        {:error, :not_found}
+
+      member ->
+        case Repo.delete(member) do
+          {:ok, deleted} ->
+            audit_role_change(opts, %{
+              scope: :building,
+              user_id: user_id,
+              building_id: building_id,
+              old_role: deleted.role,
+              new_role: nil
+            })
+
+            {:ok, deleted}
+
+          {:error, _} = err ->
+            err
+        end
     end
   end
 
@@ -247,16 +375,26 @@ defmodule KomunBackend.Buildings do
     |> Repo.one()
   end
 
-  @doc "Ajoute le user à l'immeuble via l'invite et incrémente used_count."
+  @doc """
+  Ajoute le user à l'immeuble via l'invite et incrémente used_count.
+  Si l'user était déjà membre, on ne touche **pas** à son rôle existant
+  — l'invite n'a pas vocation à downgrader/upgrader silencieusement
+  quelqu'un — et on ne consomme pas un usage de l'invite.
+  """
   def use_invite(invite, user_id) do
     Repo.transaction(fn ->
-      case add_member(invite.building_id, user_id, String.to_existing_atom(invite.role)) do
+      role_atom = String.to_existing_atom(invite.role)
+
+      case add_member(invite.building_id, user_id, role_atom, source: :join_by_code) do
         {:ok, member} ->
           invite
           |> BuildingInvite.changeset(%{used_count: invite.used_count + 1})
           |> Repo.update!()
 
           member
+
+        {:error, :already_member} ->
+          Repo.rollback(:already_member)
 
         {:error, reason} ->
           Repo.rollback(reason)
@@ -308,13 +446,42 @@ defmodule KomunBackend.Buildings do
         {:error, :not_found}
 
       building ->
-        if member?(building.id, user_id) do
-          {:ok, {:already_member, building}}
-        else
-          case add_member(building.id, user_id, role) do
-            {:ok, member} -> {:ok, {building, member}}
-            {:error, cs} -> {:error, cs}
-          end
+        existing = Repo.get_by(BuildingMember, building_id: building.id, user_id: user_id)
+
+        cond do
+          # Déjà membre actif : on ne touche à rien.
+          match?(%BuildingMember{is_active: true}, existing) ->
+            {:ok, {:already_member, building}}
+
+          # Membre soft-désactivé (cas rare aujourd'hui mais possible si
+          # un futur flow le fait) : on réactive en gardant son rôle
+          # d'origine. SURTOUT PAS d'add_member ici : ça ré-écrirait le
+          # rôle avec le default `role` du caller.
+          match?(%BuildingMember{is_active: false}, existing) ->
+            case reactivate_member(building.id, user_id) do
+              {:ok, reactivated} ->
+                Audit.record_role_change(%{
+                  scope: :building,
+                  source: :join_by_code,
+                  user_id: user_id,
+                  building_id: building.id,
+                  old_role: nil,
+                  new_role: reactivated.role,
+                  metadata: %{reactivated: true}
+                })
+
+                {:ok, {:already_member, building}}
+
+              {:error, cs} ->
+                {:error, cs}
+            end
+
+          # Pas du tout membre : insertion classique.
+          true ->
+            case add_member(building.id, user_id, role, source: :join_by_code) do
+              {:ok, member} -> {:ok, {building, member}}
+              {:error, cs} -> {:error, cs}
+            end
         end
     end
   end

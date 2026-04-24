@@ -189,8 +189,14 @@ defmodule KomunBackendWeb.AdminController do
   end
 
   def update_user_role(conn, %{"id" => id, "role" => role}) do
+    actor = Guardian.Plug.current_resource(conn)
+
     with {:ok, role_atom} <- parse_role(role),
-         {:ok, user} <- Accounts.update_user_role(id, role_atom) do
+         {:ok, user} <-
+           Accounts.update_user_role(id, role_atom,
+             actor_id: actor && actor.id,
+             source: :admin_panel
+           ) do
       json(conn, %{data: user_json(user)})
     else
       {:error, :not_found} -> conn |> put_status(404) |> json(%{error: "User not found"})
@@ -213,26 +219,97 @@ defmodule KomunBackendWeb.AdminController do
     end
   end
 
+  # POST /admin/buildings/:id/members
+  #
+  # Insertion stricte : 409 si la ligne existe déjà. Pour changer le
+  # rôle d'un membre existant, utilisez PUT
+  # `/admin/buildings/:id/members/:user_id/role` (cf. update_member_role/2).
   def add_member(conn, %{"id" => building_id, "user_id" => user_id, "role" => role}) do
+    actor = Guardian.Plug.current_resource(conn)
+
     with {:ok, role_atom} <- parse_member_role(role),
-         {:ok, _member} <- Buildings.add_member(building_id, user_id, role_atom) do
+         {:ok, _member} <-
+           Buildings.add_member(building_id, user_id, role_atom,
+             actor_id: actor && actor.id,
+             source: :admin_panel
+           ) do
       json(conn, %{message: "Member added"})
     else
-      {:error, reason} -> conn |> put_status(422) |> json(%{error: inspect(reason)})
+      {:error, :already_member} ->
+        conn
+        |> put_status(:conflict)
+        |> json(%{
+          error: "already_member",
+          hint: "Use PUT /admin/buildings/:id/members/:user_id/role to change the role."
+        })
+
+      {:error, reason} ->
+        conn |> put_status(422) |> json(%{error: inspect(reason)})
     end
   end
 
   def add_member(conn, %{"id" => building_id, "user_email" => email}) do
+    actor = Guardian.Plug.current_resource(conn)
+
     with user when not is_nil(user) <- Accounts.get_user_by_email(email),
-         {:ok, _member} <- Buildings.add_member(building_id, user.id, :coproprietaire) do
+         {:ok, _member} <-
+           Buildings.add_member(building_id, user.id, :coproprietaire,
+             actor_id: actor && actor.id,
+             source: :admin_panel
+           ) do
       json(conn, %{message: "Member added"})
     else
-      nil -> conn |> put_status(404) |> json(%{error: "User not found"})
-      {:error, reason} -> conn |> put_status(422) |> json(%{error: inspect(reason)})
+      nil ->
+        conn |> put_status(404) |> json(%{error: "User not found"})
+
+      {:error, :already_member} ->
+        conn
+        |> put_status(:conflict)
+        |> json(%{error: "already_member"})
+
+      {:error, reason} ->
+        conn |> put_status(422) |> json(%{error: inspect(reason)})
     end
   end
 
   def add_member(conn, _), do: conn |> put_status(400) |> json(%{error: "user_id or user_email required"})
+
+  # PUT /admin/buildings/:id/members/:user_id/role
+  #
+  # Met à jour explicitement le rôle d'un membre existant. 404 si le
+  # membre n'existe pas dans ce bâtiment — c'est volontaire, le caller
+  # doit faire un POST (insertion) pour ajouter quelqu'un.
+  def update_member_role(conn, %{"id" => building_id, "user_id" => user_id, "role" => role}) do
+    actor = Guardian.Plug.current_resource(conn)
+
+    with {:ok, role_atom} <- parse_member_role(role),
+         {:ok, member} <-
+           Buildings.set_member_role(building_id, user_id, role_atom,
+             actor_id: actor && actor.id,
+             source: :admin_panel
+           ) do
+      json(conn, %{
+        data: %{
+          id: member.id,
+          building_id: member.building_id,
+          user_id: member.user_id,
+          role: member.role
+        }
+      })
+    else
+      {:error, :not_found} ->
+        conn |> put_status(404) |> json(%{error: "Member not found in this building"})
+
+      {:error, :invalid_role} ->
+        conn |> put_status(422) |> json(%{error: "Invalid role"})
+
+      {:error, changeset} ->
+        conn |> put_status(422) |> json(%{errors: format_errors(changeset)})
+    end
+  end
+
+  def update_member_role(conn, _),
+    do: conn |> put_status(400) |> json(%{error: "role is required"})
 
   # DELETE /admin/users/:id/onboarding — reset first_name/last_name to nil
   def reset_onboarding(conn, %{"id" => user_id}) do
@@ -248,7 +325,12 @@ defmodule KomunBackendWeb.AdminController do
   end
 
   def remove_member(conn, %{"id" => building_id, "user_id" => user_id}) do
-    case Buildings.remove_member(building_id, user_id) do
+    actor = Guardian.Plug.current_resource(conn)
+
+    case Buildings.remove_member(building_id, user_id,
+           actor_id: actor && actor.id,
+           source: :admin_panel
+         ) do
       {:ok, _} -> json(conn, %{message: "Member removed"})
       {:error, :not_found} -> conn |> put_status(404) |> json(%{error: "Not found"})
     end
