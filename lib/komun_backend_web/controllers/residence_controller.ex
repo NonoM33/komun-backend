@@ -201,6 +201,42 @@ defmodule KomunBackendWeb.ResidenceController do
     end
   end
 
+  # GET /api/v1/residences/:id/members
+  # Liste tous les membres de la résidence (agrégation cross-buildings,
+  # dédupliquée par user, avec le rôle le plus privilégié). Pensé pour
+  # la page "Voisins" du front : montre tous les voisins de la copro,
+  # pas seulement ceux du bâtiment courant du viewer (permet à un
+  # copro de Batiment A de voir le président du CS qui est dans Batiment B).
+  def members(conn, %{"id" => residence_id}) do
+    case Residences.get_residence(residence_id) do
+      nil ->
+        conn |> put_status(:not_found) |> json(%{error: "not_found"})
+
+      _residence ->
+        members = Residences.list_residence_members(residence_id)
+
+        json(conn, %{
+          data:
+            Enum.map(members, fn m ->
+              %{
+                id: m.id,
+                role: m.role,
+                joined_at: m.joined_at,
+                building_id: m.building_id,
+                user: %{
+                  id: m.user.id,
+                  email: m.user.email,
+                  first_name: m.user.first_name,
+                  last_name: m.user.last_name,
+                  avatar_url: m.user.avatar_url,
+                  phone: m.user.phone
+                }
+              }
+            end)
+        })
+    end
+  end
+
   # POST /api/v1/residences/:id/merge
   # Body: %{"source_ids" => ["uuid1", "uuid2", ...]}
   #
