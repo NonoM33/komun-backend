@@ -30,7 +30,7 @@ defmodule KomunBackend.Buildings do
       |> ensure_residence()
 
     %Building{}
-    |> Building.changeset(attrs)
+    |> Building.initial_changeset(attrs)
     |> Repo.insert()
   end
 
@@ -46,7 +46,7 @@ defmodule KomunBackend.Buildings do
     attrs = ensure_residence(attrs)
 
     %Building{}
-    |> Building.admin_changeset(attrs)
+    |> Building.initial_changeset(attrs)
     |> Repo.insert()
   end
 
@@ -96,7 +96,16 @@ defmodule KomunBackend.Buildings do
   end
 
   def update_building(building, attrs) do
-    building |> Building.changeset(attrs) |> Repo.update()
+    # Le `join_code` est explicitement strippé des attrs : même si un
+    # caller distrait ou un client bogué l'envoie dans un PATCH, le code
+    # n'est jamais remplacé en silence. Cf. règle dans CLAUDE.md (racine
+    # du repo frontend).
+    sanitized =
+      attrs
+      |> Map.delete(:join_code)
+      |> Map.delete("join_code")
+
+    building |> Building.changeset(sanitized) |> Repo.update()
   end
 
   @doc """
