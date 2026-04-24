@@ -41,6 +41,10 @@ defmodule KomunBackendWeb.Router do
     # `/buildings/verify_code` reste en place pour la rétrocompat.
     get "/codes/verify", ResidenceController, :verify_code
     get "/buildings/verify_code", BuildingController, :verify_code
+
+    # GDPR consent log — accepts anonymous visitors (visitor_id param)
+    # or authenticated users (user_id attached via optional auth).
+    post "/consents", ConsentController, :create
   end
 
   # ── Authenticated routes ──────────────────────────────────────────────────
@@ -86,6 +90,16 @@ defmodule KomunBackendWeb.Router do
       post "/confirm-ai", IncidentController, :confirm_ai_answer
       delete "/confirm-ai", IncidentController, :unconfirm_ai_answer
       put "/ai-answer", IncidentController, :update_ai_answer
+    end
+
+    # Doléances (réclamations collectives : rampe de parking trop anguleuse,
+    # défaut de construction, etc.)
+    resources "/buildings/:building_id/doleances", DoleanceController, except: [:new, :edit] do
+      post   "/support",          DoleanceController, :add_support
+      delete "/support",          DoleanceController, :remove_support
+      post   "/generate-letter",  DoleanceController, :generate_letter
+      post   "/suggest-experts",  DoleanceController, :suggest_experts
+      post   "/escalate",         DoleanceController, :escalate
     end
 
     # Announcements
