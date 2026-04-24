@@ -157,6 +157,40 @@ defmodule KomunBackendWeb.BuildingController do
     end)})
   end
 
+  # DELETE /api/v1/buildings/:id
+  # Soft-delete d'un bâtiment. Refusé s'il reste des membres actifs
+  # (→ 422 `{error: "has_active_members"}`). Pensé pour nettoyer les
+  # bâtiments placeholder créés par la migration vers le modèle Résidence.
+  def delete(conn, %{"id" => id}) do
+    user = Guardian.Plug.current_resource(conn)
+
+    if user.role == :super_admin or user.role in [:president_cs, :membre_cs, :syndic_manager, :syndic_staff, :council] do
+      building = Buildings.get_building!(id)
+
+      case Buildings.delete_building(building) do
+        {:ok, _} -> json(conn, %{ok: true})
+
+        {:error, :has_active_members} ->
+          conn
+          |> put_status(:unprocessable_entity)
+          |> json(%{
+            error: "has_active_members",
+            message: "Ce bâtiment a encore des résidents. Déplacez-les ou retirez-les d'abord."
+          })
+
+        {:error, cs} ->
+          conn
+          |> put_status(:unprocessable_entity)
+          |> json(%{errors: Ecto.Changeset.traverse_errors(cs, fn {msg, _} -> msg end)})
+      end
+    else
+      conn |> put_status(:forbidden) |> json(%{error: "forbidden"})
+    end
+  rescue
+    Ecto.NoResultsError ->
+      conn |> put_status(:not_found) |> json(%{error: "not_found"})
+  end
+
   def lots(conn, %{"id" => id}) do
     lots = Buildings.list_lots(id)
     json(conn, %{data: Enum.map(lots, fn l ->

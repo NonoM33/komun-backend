@@ -178,6 +178,45 @@ defmodule KomunBackendWeb.ResidenceController do
     end
   end
 
+  # POST /api/v1/residences/:id/merge
+  # Body: %{"source_ids" => ["uuid1", "uuid2", ...]}
+  #
+  # Absorbe toutes les résidences sources dans la résidence courante :
+  # déplace leurs bâtiments, puis soft-delete les sources. Utile quand la
+  # migration a auto-créé une résidence par bâtiment et qu'on veut tout
+  # regrouper sous une seule copropriété.
+  def merge(conn, %{"id" => target_id, "source_ids" => source_ids})
+      when is_list(source_ids) do
+    user = Guardian.Plug.current_resource(conn)
+
+    case Residences.get_residence(target_id) do
+      nil ->
+        conn |> put_status(:not_found) |> json(%{error: "not_found"})
+
+      %Residence{} = residence ->
+        if authorized_for?(user, residence) do
+          case Residences.merge_into(target_id, source_ids) do
+            {:ok, stats} ->
+              residence = KomunBackend.Repo.preload(residence, :buildings, force: true)
+
+              json(conn, %{
+                data: residence_json(residence, user),
+                merged: stats
+              })
+
+            {:error, reason} ->
+              conn
+              |> put_status(:unprocessable_entity)
+              |> json(%{error: inspect(reason)})
+          end
+        else
+          conn |> put_status(:forbidden) |> json(%{error: "forbidden"})
+        end
+    end
+  end
+
+  def merge(conn, _), do: conn |> put_status(:bad_request) |> json(%{error: "source_ids required"})
+
   # POST /api/v1/residences/:id/buildings/:building_id/attach
   def attach_building(conn, %{"id" => residence_id, "building_id" => building_id}) do
     user = Guardian.Plug.current_resource(conn)

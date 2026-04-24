@@ -63,6 +63,7 @@ defmodule KomunBackendWeb.Router do
     patch  "/residences/:id",                             ResidenceController, :update
     put    "/residences/:id",                             ResidenceController, :update
     delete "/residences/:id",                             ResidenceController, :delete
+    post   "/residences/:id/merge",                       ResidenceController, :merge
     post   "/residences/:id/buildings/:building_id/attach",
                                                           ResidenceController, :attach_building
 
@@ -71,6 +72,7 @@ defmodule KomunBackendWeb.Router do
     # Note: :join must be declared before :show so "join" isn't parsed as an :id.
     post   "/buildings/join", BuildingController, :join
     get    "/buildings/:id", BuildingController, :show
+    delete "/buildings/:id", BuildingController, :delete
     get    "/buildings/:id/members", BuildingController, :members
     get    "/buildings/:id/lots", BuildingController, :lots
 

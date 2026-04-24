@@ -108,6 +108,33 @@ defmodule KomunBackend.Residences do
     |> Repo.update()
   end
 
+  @doc """
+  Absorbe toutes les résidences sources dans la résidence cible :
+  déplace chaque bâtiment actif vers la cible, puis soft-delete les
+  résidences sources une fois qu'elles sont vides.
+
+  Renvoie `{:ok, %{moved: n, deleted: m}}`.
+  """
+  def merge_into(target_residence_id, source_residence_ids) when is_list(source_residence_ids) do
+    sources = Enum.reject(source_residence_ids, &(&1 == target_residence_id))
+
+    Repo.transaction(fn ->
+      moved =
+        from(b in Building,
+          where: b.residence_id in ^sources and b.is_active == true
+        )
+        |> Repo.update_all(set: [residence_id: target_residence_id, updated_at: DateTime.utc_now() |> DateTime.truncate(:second)])
+        |> elem(0)
+
+      deleted =
+        from(r in Residence, where: r.id in ^sources and r.is_active == true)
+        |> Repo.update_all(set: [is_active: false, updated_at: DateTime.utc_now() |> DateTime.truncate(:second)])
+        |> elem(0)
+
+      %{moved: moved, deleted: deleted}
+    end)
+  end
+
   # ── Rattachement de bâtiments ─────────────────────────────────────────────
 
   @doc """
