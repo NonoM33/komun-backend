@@ -93,6 +93,30 @@ defmodule KomunBackendWeb.IncidentController do
     end
   end
 
+  # PUT /api/v1/buildings/:building_id/incidents/:id/ai-answer
+  #
+  # Edit the AI answer text (and optionally validate it in one shot by
+  # passing `confirm: true`). Privileged members only — residents see the
+  # saved version, confirmed or not, from the list endpoint.
+  def update_ai_answer(conn, %{"building_id" => building_id, "id" => id} = params) do
+    user = Guardian.Plug.current_resource(conn)
+    ai_answer = Map.get(params, "ai_answer", "")
+    confirm? = params["confirm"] == true
+
+    with :ok <- authorize_privileged(conn, building_id, user) do
+      incident = Incidents.get_incident!(id)
+
+      case Incidents.update_ai_answer(incident, ai_answer, user.id, confirm: confirm?) do
+        {:ok, updated} ->
+          updated = KomunBackend.Repo.preload(updated, [:reporter, :assignee, comments: :author])
+          json(conn, %{data: incident_json(updated)})
+
+        {:error, cs} ->
+          conn |> put_status(:unprocessable_entity) |> json(%{errors: format_errors(cs)})
+      end
+    end
+  end
+
   # ── Helpers ───────────────────────────────────────────────────────────────
 
   @privileged_roles [:super_admin, :syndic_manager, :syndic_staff, :president_cs, :membre_cs]

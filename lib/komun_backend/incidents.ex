@@ -79,6 +79,57 @@ defmodule KomunBackend.Incidents do
     |> Repo.update()
   end
 
+  @doc """
+  Let privileged members edit the AI answer (to complete, correct, or
+  rewrite the text). When `:confirm` is true, the new text is also marked
+  validated in the same update, so the resident-facing banner flips from
+  "proposition" to "validée" in one click.
+
+  Blank text clears both the answer and any confirmation — the resident
+  stops seeing an AI banner entirely.
+  """
+  def update_ai_answer(%Incident{} = incident, ai_answer, user_id, opts \\ []) do
+    confirm? = Keyword.get(opts, :confirm, false)
+    now = DateTime.utc_now() |> DateTime.truncate(:second)
+
+    trimmed =
+      case ai_answer do
+        nil -> ""
+        text when is_binary(text) -> String.trim(text)
+        _ -> ""
+      end
+
+    attrs =
+      cond do
+        trimmed == "" ->
+          %{
+            ai_answer: nil,
+            ai_answered_at: nil,
+            ai_answer_confirmed_at: nil,
+            ai_answer_confirmed_by_id: nil
+          }
+
+        confirm? ->
+          %{
+            ai_answer: trimmed,
+            ai_answered_at: incident.ai_answered_at || now,
+            ai_answer_confirmed_at: now,
+            ai_answer_confirmed_by_id: user_id
+          }
+
+        true ->
+          %{
+            ai_answer: trimmed,
+            ai_answered_at: incident.ai_answered_at || now
+          }
+      end
+
+    with {:ok, updated} <- incident |> Incident.changeset(attrs) |> Repo.update() do
+      BuildingChannel.broadcast_incident(updated.building_id, updated)
+      {:ok, updated}
+    end
+  end
+
   def update_incident(incident, attrs) do
     with {:ok, updated} <- incident |> Incident.changeset(attrs) |> Repo.update() do
       updated = Repo.preload(updated, [:reporter, :assignee])

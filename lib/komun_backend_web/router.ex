@@ -85,6 +85,7 @@ defmodule KomunBackendWeb.Router do
       post "/comments", IncidentCommentController, :create
       post "/confirm-ai", IncidentController, :confirm_ai_answer
       delete "/confirm-ai", IncidentController, :unconfirm_ai_answer
+      put "/ai-answer", IncidentController, :update_ai_answer
     end
 
     # Announcements
