@@ -31,6 +31,81 @@ defmodule KomunBackendWeb.AdminController do
     end
   end
 
+  # POST /api/v1/admin/users/:id/impersonate
+  #
+  # Permet à un super_admin de se "connecter en tant que" un autre user.
+  # On renvoie une paire de tokens JWT standards, enrichis d'un claim
+  # `impersonated_by` qui contient l'id du super_admin initiateur. Le
+  # frontend l'affiche via /me pour bannière + bouton "Revenir à mon
+  # compte". Garde-fous :
+  #
+  # - super_admin ne peut pas s'impersonate lui-même
+  # - impossible d'impersonate un autre super_admin (évite escalade /
+  #   chain d'impersonation)
+  # - journalisé dans les logs (Logger.warning) pour audit
+  def impersonate(conn, %{"id" => target_id}) do
+    current = Guardian.Plug.current_resource(conn)
+
+    cond do
+      to_string(current.id) == to_string(target_id) ->
+        conn
+        |> put_status(:forbidden)
+        |> json(%{error: "Vous ne pouvez pas vous impersonate vous-même."})
+
+      true ->
+        case Accounts.get_user(target_id) do
+          nil ->
+            conn |> put_status(404) |> json(%{error: "User not found"})
+
+          %{role: :super_admin} ->
+            conn
+            |> put_status(:forbidden)
+            |> json(%{
+              error:
+                "Impossible d'impersonate un autre super_admin (évite les chaînes d'impersonation)."
+            })
+
+          target ->
+            # Audit log : qui impersonate qui, quand, depuis quelle IP.
+            remote_ip =
+              case conn.remote_ip do
+                {a, b, c, d} -> "#{a}.#{b}.#{c}.#{d}"
+                _ -> "unknown"
+              end
+
+            require Logger
+
+            Logger.warning(
+              "[impersonate] admin=#{current.email}(#{current.id}) " <>
+                "→ target=#{target.email}(#{target.id}) ip=#{remote_ip}"
+            )
+
+            claims = %{"impersonated_by" => to_string(current.id)}
+
+            {:ok, access_token, _} =
+              Guardian.encode_and_sign(target, claims, ttl: {1, :hour})
+
+            {:ok, refresh_token, _} =
+              Guardian.encode_and_sign(target, claims,
+                token_type: "refresh",
+                ttl: {30, :day}
+              )
+
+            json(conn, %{
+              access_token: access_token,
+              refresh_token: refresh_token,
+              user: user_json(target),
+              impersonated_by: %{
+                id: current.id,
+                email: current.email,
+                first_name: current.first_name,
+                last_name: current.last_name
+              }
+            })
+        end
+    end
+  end
+
   # DELETE /api/v1/admin/users/:id — delete a user account.
   # Guardrails: a super_admin can't delete themselves (would lock out the
   # system), and we refuse to delete the hard-coded seed super_admin.

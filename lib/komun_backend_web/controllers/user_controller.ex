@@ -5,7 +5,35 @@ defmodule KomunBackendWeb.UserController do
 
   def me(conn, _) do
     user = Guardian.Plug.current_resource(conn)
-    json(conn, %{data: user_json(user)})
+
+    # Si la session courante est une impersonation, on expose l'admin
+    # initiateur pour que le frontend affiche la bannière "Vous êtes
+    # connecté en tant que X — [Revenir]".
+    claims = Guardian.Plug.current_claims(conn) || %{}
+
+    impersonator =
+      case Map.get(claims, "impersonated_by") do
+        admin_id when is_binary(admin_id) and admin_id != "" ->
+          case Accounts.get_user(admin_id) do
+            nil ->
+              nil
+
+            admin ->
+              %{
+                id: admin.id,
+                email: admin.email,
+                first_name: admin.first_name,
+                last_name: admin.last_name
+              }
+          end
+
+        _ ->
+          nil
+      end
+
+    json(conn, %{
+      data: Map.put(user_json(user), :impersonated_by, impersonator)
+    })
   end
 
   def update_profile(conn, %{"user" => attrs}) do
