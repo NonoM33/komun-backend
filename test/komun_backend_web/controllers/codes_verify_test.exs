@@ -96,6 +96,44 @@ defmodule KomunBackendWeb.CodesVerifyTest do
     assert body["residence"]["name"] == "Résidence Unissons"
   end
 
+  test "masque le bâtiment placeholder qui porte le même nom que la résidence", %{
+    conn: conn
+  } do
+    # Cas répro post-migration : une résidence "unissons" a hérité d'un
+    # bâtiment homonyme auto-créé, puis le user a déplacé Batiment A et
+    # Batiment B dedans. À l'inscription, il ne faut pas proposer au
+    # voisin de rejoindre "unissons" (placeholder) dans la liste.
+    residence = insert_residence!("PLACEHLD")
+    _placeholder = insert_building!(residence, "PLACED01", "Résidence Unissons")
+    _a = insert_building!(residence, "PLACED02", "Bâtiment A")
+    _b = insert_building!(residence, "PLACED03", "Bâtiment B")
+
+    body =
+      conn
+      |> get(~p"/api/v1/codes/verify?code=PLACEHLD")
+      |> json_response(200)
+
+    names = body["buildings"] |> Enum.map(& &1["name"]) |> Enum.sort()
+    assert names == ["Bâtiment A", "Bâtiment B"]
+  end
+
+  test "ne filtre PAS quand la résidence n'a qu'un bâtiment (même homonyme)", %{
+    conn: conn
+  } do
+    # Cas limite : résidence mono-bâtiment où le building porte vraiment
+    # le même nom que la copro. Il faut le garder visible, sinon la liste
+    # se retrouve vide et l'user ne peut rien choisir.
+    residence = insert_residence!("MONOBAT1")
+    _only = insert_building!(residence, "MONOBAT2", "Résidence Unissons")
+
+    body =
+      conn
+      |> get(~p"/api/v1/codes/verify?code=MONOBAT1")
+      |> json_response(200)
+
+    assert length(body["buildings"]) == 1
+  end
+
   test "priorise le match résidence si deux codes identiques existaient (impossible en DB)", %{
     conn: conn
   } do
