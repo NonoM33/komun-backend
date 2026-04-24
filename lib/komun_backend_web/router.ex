@@ -65,6 +65,9 @@ defmodule KomunBackendWeb.Router do
     delete "/residences/:id",                             ResidenceController, :delete
     post   "/residences/:id/merge",                       ResidenceController, :merge
     get    "/residences/:id/members",                     ResidenceController, :members
+
+    # Archives (lecture seule des votes CS de l'ancienne stack Rails)
+    get    "/council-votes/archived",                     ArchivedCouncilVoteController, :index
     post   "/residences/:id/buildings/:building_id/attach",
                                                           ResidenceController, :attach_building
 
@@ -158,6 +161,7 @@ defmodule KomunBackendWeb.Router do
     delete "/users/:id",                       AdminController, :delete_user
     post   "/users/:id/impersonate",           AdminController, :impersonate
     post   "/users/:id/magic-link",            AdminController, :generate_magic_link
+    post   "/council-votes/import",            ArchivedCouncilVoteController, :import
     delete "/users/:id/onboarding",            AdminController, :reset_onboarding
     get    "/buildings",                       AdminController, :list_buildings
     post   "/buildings",                       AdminController, :create_building
