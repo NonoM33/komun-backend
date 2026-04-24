@@ -106,9 +106,23 @@ defmodule KomunBackend.Accounts do
   def create_magic_link(email, opts \\ []) when is_binary(email) do
     token = MagicLink.generate_token()
     token_hash = MagicLink.hash_token(token)
+    normalized_email = String.downcase(email)
+
+    # Invalide tous les liens précédents encore actifs pour ce mail. Le
+    # flow register → /login peut pousser un user à redemander un lien
+    # alors qu'il en a déjà un en attente. Sans ça, le vieux lien reste
+    # valide 15 min et l'user clique dessus par erreur, ce qui peut
+    # créer de la confusion (ex. Pascale). "Seul le dernier lien
+    # fonctionne" — comportement standard des magic-link systems.
+    now = DateTime.utc_now() |> DateTime.truncate(:second)
+
+    from(ml in MagicLink,
+      where: ml.email == ^normalized_email and is_nil(ml.used_at)
+    )
+    |> Repo.update_all(set: [used_at: now])
 
     attrs = %{
-      email: String.downcase(email),
+      email: normalized_email,
       token_hash: token_hash,
       expires_at: MagicLink.expires_at(),
       first_name: trim_or_nil(Keyword.get(opts, :first_name)),
