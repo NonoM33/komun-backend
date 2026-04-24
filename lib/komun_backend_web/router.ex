@@ -156,6 +156,7 @@ defmodule KomunBackendWeb.Router do
     put    "/users/:id/role",                  AdminController, :update_user_role
     delete "/users/:id",                       AdminController, :delete_user
     post   "/users/:id/impersonate",           AdminController, :impersonate
+    post   "/users/:id/magic-link",            AdminController, :generate_magic_link
     delete "/users/:id/onboarding",            AdminController, :reset_onboarding
     get    "/buildings",                       AdminController, :list_buildings
     post   "/buildings",                       AdminController, :create_building

@@ -31,6 +31,48 @@ defmodule KomunBackendWeb.AdminController do
     end
   end
 
+  # POST /api/v1/admin/users/:id/magic-link
+  #
+  # Génère un magic-link pour l'user cible SANS envoyer l'email et
+  # renvoie l'URL complète au super_admin. Pensé pour le support : un
+  # voisin dit "mon lien ne marche pas", l'admin lui génère un nouveau
+  # lien et lui transmet manuellement (WhatsApp, SMS…). Conséquence du
+  # fix d'invalidation : cette génération invalide tous les liens
+  # précédents pour cet email (voir Accounts.create_magic_link).
+  def generate_magic_link(conn, %{"id" => target_id}) do
+    current = Guardian.Plug.current_resource(conn)
+
+    case Accounts.get_user(target_id) do
+      nil ->
+        conn |> put_status(404) |> json(%{error: "User not found"})
+
+      target ->
+        require Logger
+
+        Logger.warning(
+          "[admin:magic_link] admin=#{current.email}(#{current.id}) " <>
+            "→ generated link for #{target.email}(#{target.id})"
+        )
+
+        case Accounts.create_magic_link(target.email) do
+          {:ok, token} ->
+            base = System.get_env("APP_BASE_URL", "https://komun.app")
+            url = "#{base}/auth/verify?token=#{token}"
+
+            json(conn, %{
+              url: url,
+              email: target.email,
+              expires_in_minutes: 15
+            })
+
+          {:error, cs} ->
+            conn
+            |> put_status(:unprocessable_entity)
+            |> json(%{errors: Ecto.Changeset.traverse_errors(cs, &elem(&1, 0))})
+        end
+    end
+  end
+
   # POST /api/v1/admin/users/:id/impersonate
   #
   # Permet à un super_admin de se "connecter en tant que" un autre user.
