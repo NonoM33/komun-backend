@@ -31,10 +31,21 @@ defmodule KomunBackend.AssistantConversationsTest do
   end
 
   defp insert_building!(code \\ nil) do
+    # We insert via struct literals (not changesets) because the changeset
+    # surface for Residence / Building differs across branches (stg has
+    # `initial_changeset/2`, main doesn't). A struct insert hits the DB
+    # directly and is stable regardless of which branch's code is loaded.
+    now = DateTime.utc_now() |> DateTime.truncate(:second)
+
+    org_suffix = System.unique_integer([:positive])
+
     {:ok, org} =
-      %Organization{}
-      |> Organization.changeset(%{name: "Org #{System.unique_integer([:positive])}"})
-      |> Repo.insert()
+      Repo.insert(%Organization{
+        name: "Org #{org_suffix}",
+        slug: "org-#{org_suffix}",
+        inserted_at: now,
+        updated_at: now
+      })
 
     residence_code =
       "R" <>
@@ -43,12 +54,14 @@ defmodule KomunBackend.AssistantConversationsTest do
          |> String.pad_leading(7, "0"))
 
     {:ok, residence} =
-      %Residence{}
-      |> Residence.initial_changeset(%{
+      Repo.insert(%Residence{
         name: "Résidence #{residence_code}",
-        join_code: residence_code
+        slug: "residence-#{String.downcase(residence_code)}",
+        join_code: residence_code,
+        is_active: true,
+        inserted_at: now,
+        updated_at: now
       })
-      |> Repo.insert()
 
     building_code =
       code ||
@@ -57,17 +70,19 @@ defmodule KomunBackend.AssistantConversationsTest do
            |> Integer.to_string()
            |> String.pad_leading(7, "0"))
 
-    %Building{}
-    |> Building.initial_changeset(%{
+    Repo.insert!(%Building{
       name: "Bâtiment #{System.unique_integer([:positive])}",
       address: "10 rue X",
       city: "Paris",
       postal_code: "75001",
+      country: "FR",
+      is_active: true,
       organization_id: org.id,
-      join_code: building_code
+      residence_id: residence.id,
+      join_code: building_code,
+      inserted_at: now,
+      updated_at: now
     })
-    |> Ecto.Changeset.put_change(:residence_id, residence.id)
-    |> Repo.insert!()
   end
 
   defp add_member!(building, user) do
