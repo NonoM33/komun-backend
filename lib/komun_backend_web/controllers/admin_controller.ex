@@ -1,7 +1,13 @@
 defmodule KomunBackendWeb.AdminController do
   use KomunBackendWeb, :controller
 
-  alias KomunBackend.{Accounts, Buildings}
+  import Ecto.Query
+  alias KomunBackend.{Accounts, Buildings, Repo}
+  alias KomunBackend.Accounts.User
+  alias KomunBackend.Announcements.Announcement
+  alias KomunBackend.Buildings.{Building, BuildingMember}
+  alias KomunBackend.Chat.Message
+  alias KomunBackend.Incidents.Incident
   alias KomunBackend.Auth.Guardian
 
   def list_users(conn, _) do
@@ -248,6 +254,150 @@ defmodule KomunBackendWeb.AdminController do
     end
   end
 
+  # GET /api/v1/admin/analytics
+  #
+  # Aggregate KPIs for the admin dashboard. Counts are scoped to the whole
+  # instance — we don't have a notion of "current organization" on the
+  # Elixir backend yet, and super_admin is typically the only caller.
+  #
+  # Shape mirrors the old Rails endpoint so the frontend doesn't need to
+  # change: overview + recent_activity + engagement.
+  def analytics(conn, _params) do
+    now = DateTime.utc_now() |> DateTime.truncate(:second)
+    seven_days_ago = DateTime.add(now, -7, :day)
+    thirty_days_ago = DateTime.add(now, -30, :day)
+
+    overview = %{
+      residents_count: Repo.aggregate(from(u in User), :count, :id),
+      pending_residents:
+        Repo.aggregate(
+          from(u in User,
+            left_join: m in BuildingMember, on: m.user_id == u.id,
+            where: is_nil(m.id)
+          ),
+          :count,
+          :id
+        ),
+      buildings_count: Repo.aggregate(from(b in Building), :count, :id),
+      posts_this_month:
+        Repo.aggregate(
+          from(a in Announcement, where: a.inserted_at >= ^thirty_days_ago),
+          :count,
+          :id
+        ),
+      active_incidents:
+        Repo.aggregate(
+          from(i in Incident, where: i.status in [:open, :in_progress]),
+          :count,
+          :id
+        ),
+      upcoming_events: 0,
+      bookings_today: 0
+    }
+
+    engagement = %{
+      active_users_7d:
+        Repo.aggregate(
+          from(u in User, where: u.last_sign_in_at >= ^seven_days_ago),
+          :count,
+          :id
+        ),
+      active_users_30d:
+        Repo.aggregate(
+          from(u in User, where: u.last_sign_in_at >= ^thirty_days_ago),
+          :count,
+          :id
+        ),
+      messages_7d:
+        Repo.aggregate(
+          from(m in Message, where: m.inserted_at >= ^seven_days_ago),
+          :count,
+          :id
+        ),
+      posts_7d:
+        Repo.aggregate(
+          from(a in Announcement, where: a.inserted_at >= ^seven_days_ago),
+          :count,
+          :id
+        )
+    }
+
+    recent_incidents =
+      Repo.all(
+        from(i in Incident,
+          order_by: [desc: i.inserted_at],
+          limit: 3,
+          preload: :reporter
+        )
+      )
+      |> Enum.map(fn i ->
+        %{
+          type: "incident",
+          title: i.title,
+          status: i.status,
+          author: reporter_name(i.reporter),
+          created_at: i.inserted_at
+        }
+      end)
+
+    recent_announcements =
+      Repo.all(
+        from(a in Announcement,
+          order_by: [desc: a.inserted_at],
+          limit: 3,
+          preload: :author
+        )
+      )
+      |> Enum.map(fn a ->
+        %{
+          type: "post",
+          title: a.title,
+          author: reporter_name(a.author),
+          created_at: a.inserted_at
+        }
+      end)
+
+    recent_activity =
+      (recent_incidents ++ recent_announcements)
+      |> Enum.sort_by(& &1.created_at, {:desc, DateTime})
+      |> Enum.take(10)
+
+    json(conn, %{
+      data: %{
+        overview: overview,
+        recent_activity: recent_activity,
+        engagement: engagement
+      }
+    })
+  end
+
+  # GET /api/v1/admin/residents/pending — users registered but not yet
+  # attached to a building. Matches the old Rails "à approuver" list.
+  def pending_residents(conn, _params) do
+    users =
+      Repo.all(
+        from(u in User,
+          left_join: m in BuildingMember, on: m.user_id == u.id,
+          where: is_nil(m.id),
+          order_by: [desc: u.inserted_at]
+        )
+      )
+
+    json(conn, %{
+      data:
+        Enum.map(users, fn u ->
+          %{
+            id: u.id,
+            email: u.email,
+            full_name: full_name(u),
+            apartment_number: u.apartment_number,
+            role: u.role,
+            created_at: u.inserted_at
+          }
+        end)
+    })
+  end
+
   # ── Private helpers ────────────────────────────────────────────────────────
 
   defp user_json(user) do
@@ -291,4 +441,14 @@ defmodule KomunBackendWeb.AdminController do
     Ecto.Changeset.traverse_errors(changeset, fn {msg, _} -> msg end)
   end
   defp format_errors(other), do: other
+
+  defp reporter_name(%Ecto.Association.NotLoaded{}), do: nil
+  defp reporter_name(nil), do: nil
+  defp reporter_name(user), do: full_name(user)
+
+  defp full_name(%{first_name: f, last_name: l}) when is_binary(f) and is_binary(l),
+    do: "#{f} #{l}"
+  defp full_name(%{first_name: f}) when is_binary(f), do: f
+  defp full_name(%{email: e}) when is_binary(e), do: e
+  defp full_name(_), do: nil
 end

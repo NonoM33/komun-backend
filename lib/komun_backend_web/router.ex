@@ -156,6 +156,8 @@ defmodule KomunBackendWeb.Router do
   scope "/api/v1/admin", KomunBackendWeb do
     pipe_through [:authenticated, :require_super_admin]
 
+    get    "/analytics",                       AdminController, :analytics
+    get    "/residents/pending",               AdminController, :pending_residents
     get    "/users",                           AdminController, :list_users
     get    "/users/:id",                       AdminController, :show_user
     put    "/users/:id/role",                  AdminController, :update_user_role
