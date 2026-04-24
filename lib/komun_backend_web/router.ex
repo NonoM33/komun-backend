@@ -131,9 +131,17 @@ defmodule KomunBackendWeb.Router do
       except: [:new, :edit, :show]
 
     # AI assistant (chatbot)
+    # Legacy single-thread endpoints — kept so any older client keeps working.
     get  "/buildings/:building_id/assistant/history", AssistantController, :history
     get  "/buildings/:building_id/assistant/status",  AssistantController, :status
     post "/buildings/:building_id/assistant/ask",     AssistantController, :ask
+
+    # Multi-conversation endpoints (ChatGPT-style threads).
+    get    "/buildings/:building_id/assistant/conversations",         AssistantController, :list_conversations
+    post   "/buildings/:building_id/assistant/conversations",         AssistantController, :create_conversation
+    get    "/buildings/:building_id/assistant/conversations/:id",     AssistantController, :show_conversation
+    delete "/buildings/:building_id/assistant/conversations/:id",     AssistantController, :delete_conversation
+    post   "/buildings/:building_id/assistant/conversations/:id/ask", AssistantController, :ask_in_conversation
 
     # Push notification device registration
     post "/devices/register", DeviceController, :register
