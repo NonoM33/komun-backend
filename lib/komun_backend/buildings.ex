@@ -23,20 +23,60 @@ defmodule KomunBackend.Buildings do
   end
 
   def create_building(org_id, attrs) do
-    %Building{}
-    |> Building.changeset(
+    attrs =
       attrs
       |> Map.put(:organization_id, org_id)
       |> ensure_join_code()
-    )
+      |> ensure_residence()
+
+    %Building{}
+    |> Building.changeset(attrs)
     |> Repo.insert()
   end
 
-  # Admin version: organization_id optional
+  # Admin version: organization_id optional.
+  #
+  # Depuis l'introduction des résidences, chaque bâtiment doit avoir une
+  # `residence_id`. Si le caller n'en fournit pas, on auto-crée une résidence
+  # mono-bâtiment avec les mêmes infos (name, address, city…) pour garder
+  # l'ancien flow "créer un bâtiment en un clic" fonctionnel. L'admin peut
+  # ensuite rattacher ce bâtiment à une autre résidence via l'UI.
   def create_building(attrs) when is_map(attrs) do
+    attrs = ensure_join_code(attrs)
+    attrs = ensure_residence(attrs)
+
     %Building{}
-    |> Building.admin_changeset(ensure_join_code(attrs))
+    |> Building.admin_changeset(attrs)
     |> Repo.insert()
+  end
+
+  defp ensure_residence(attrs) when is_map(attrs) do
+    already? =
+      Map.has_key?(attrs, :residence_id) or Map.has_key?(attrs, "residence_id")
+
+    if already? do
+      attrs
+    else
+      residence_attrs = %{
+        name: Map.get(attrs, :name) || Map.get(attrs, "name"),
+        address: Map.get(attrs, :address) || Map.get(attrs, "address"),
+        city: Map.get(attrs, :city) || Map.get(attrs, "city"),
+        postal_code: Map.get(attrs, :postal_code) || Map.get(attrs, "postal_code"),
+        country: Map.get(attrs, :country) || Map.get(attrs, "country") || "FR",
+        organization_id:
+          Map.get(attrs, :organization_id) || Map.get(attrs, "organization_id")
+      }
+
+      case KomunBackend.Residences.create_residence(residence_attrs) do
+        {:ok, residence} ->
+          if Map.has_key?(attrs, :name),
+            do: Map.put(attrs, :residence_id, residence.id),
+            else: Map.put(attrs, "residence_id", residence.id)
+
+        {:error, _} ->
+          attrs
+      end
+    end
   end
 
   # Stuffs a fresh join_code into the attrs if the caller didn't provide one.
