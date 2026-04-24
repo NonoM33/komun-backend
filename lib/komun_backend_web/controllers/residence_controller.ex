@@ -47,12 +47,35 @@ defmodule KomunBackendWeb.ResidenceController do
   def verify_code(conn, %{"code" => code}) when is_binary(code) and code != "" do
     case Residences.verify_code(code) do
       {:residence, residence, buildings} ->
+        # Placeholder-filter : on cache les bâtiments qui portent le même
+        # nom que la résidence. Ce sont quasiment toujours des artefacts
+        # de la migration auto-résidence (un building a été auto-promu
+        # en résidence du même nom, puis d'autres bâtiments lui ont été
+        # rattachés). À l'inscription, le voisin ne doit voir QUE les
+        # bâtiments réels. Cas limite préservé : résidence mono-bâtiment
+        # où le building s'appelle effectivement comme la résidence —
+        # dans ce cas on ne filtre pas pour éviter de montrer une liste
+        # vide (rien à choisir).
+        displayable =
+          if length(buildings) > 1 do
+            residence_name_norm = normalize_name(residence.name)
+
+            filtered =
+              Enum.reject(buildings, fn b ->
+                normalize_name(b.name) == residence_name_norm
+              end)
+
+            if filtered == [], do: buildings, else: filtered
+          else
+            buildings
+          end
+
         json(conn, %{
           valid: true,
           type: "residence",
           residence: residence_summary(residence),
           buildings:
-            Enum.map(buildings, fn b ->
+            Enum.map(displayable, fn b ->
               %{
                 id: b.id,
                 name: b.name,
@@ -282,6 +305,18 @@ defmodule KomunBackendWeb.ResidenceController do
     else
       base
     end
+  end
+
+  # Normalise un nom pour comparer building <-> residence : lowercase +
+  # trim + collapse des espaces. Suffisant pour attraper les cas courants
+  # ("unissons" vs " Unissons ").
+  defp normalize_name(nil), do: ""
+
+  defp normalize_name(name) when is_binary(name) do
+    name
+    |> String.trim()
+    |> String.downcase()
+    |> String.replace(~r/\s+/, " ")
   end
 
   defp residence_summary(%Residence{} = r) do
