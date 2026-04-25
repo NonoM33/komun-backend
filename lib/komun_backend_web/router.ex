@@ -118,6 +118,9 @@ defmodule KomunBackendWeb.Router do
     delete "/buildings/:building_id/diligences/:id/files/:file_id",
            DiligenceController, :delete_file
 
+    post "/buildings/:building_id/diligences/:id/generate-letter",
+         DiligenceController, :generate_letter
+
     # Announcements
     resources "/buildings/:building_id/announcements", AnnouncementController,
       except: [:new, :edit]

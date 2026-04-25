@@ -208,6 +208,52 @@ defmodule KomunBackendWeb.DiligenceController do
     end
   end
 
+  # POST /api/v1/buildings/:building_id/diligences/:id/generate-letter
+  # Body : { "kind": "saisine" | "mise_en_demeure" }
+  def generate_letter(conn, %{"building_id" => building_id, "id" => id} = params) do
+    user = Guardian.Plug.current_resource(conn)
+    raw_kind = Map.get(params, "kind")
+
+    with :ok <- authorize_privileged(conn, building_id, user),
+         {:ok, kind} <- parse_kind(raw_kind) do
+      diligence = Diligences.get_diligence!(id)
+
+      cond do
+        diligence.building_id != building_id ->
+          conn |> put_status(:not_found) |> json(%{error: "Not found"}) |> halt()
+
+        true ->
+          case KomunBackend.AI.DiligenceLetter.generate_letter(diligence, kind) do
+            {:ok, updated} ->
+              json(conn, %{data: diligence_json(updated)})
+
+            {:error, cs} when is_struct(cs, Ecto.Changeset) ->
+              conn
+              |> put_status(:unprocessable_entity)
+              |> json(%{errors: format_errors(cs)})
+
+            {:error, reason} ->
+              conn
+              |> put_status(:bad_gateway)
+              |> json(%{error: "Échec de la génération : #{inspect(reason)}"})
+          end
+      end
+    else
+      {:error, :invalid_kind} ->
+        conn
+        |> put_status(:bad_request)
+        |> json(%{error: "kind doit être \"saisine\" ou \"mise_en_demeure\""})
+        |> halt()
+
+      %Plug.Conn{} = halted ->
+        halted
+    end
+  end
+
+  defp parse_kind("saisine"), do: {:ok, :saisine}
+  defp parse_kind("mise_en_demeure"), do: {:ok, :mise_en_demeure}
+  defp parse_kind(_), do: {:error, :invalid_kind}
+
   # DELETE /api/v1/buildings/:building_id/diligences/:id/files/:file_id
   def delete_file(conn, %{
         "building_id" => building_id,

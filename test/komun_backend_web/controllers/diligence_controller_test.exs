@@ -338,6 +338,98 @@ defmodule KomunBackendWeb.DiligenceControllerTest do
     end
   end
 
+  describe "POST /api/v1/buildings/:bid/diligences/:id/generate-letter" do
+    setup do
+      previous = System.get_env("GROQ_API_KEY")
+      System.delete_env("GROQ_API_KEY")
+      on_exit(fn -> if previous, do: System.put_env("GROQ_API_KEY", previous) end)
+      :ok
+    end
+
+    test "génère un courrier de saisine et le persiste", %{conn: conn} do
+      {building, user} = setup_with_president()
+
+      {:ok, d} =
+        KomunBackend.Diligences.create_diligence(
+          building.id,
+          user,
+          %{"title" => "Odeurs cannabis lot 14"}
+        )
+
+      conn =
+        conn
+        |> authed(user)
+        |> post(
+          ~p"/api/v1/buildings/#{building.id}/diligences/#{d.id}/generate-letter",
+          %{"kind" => "saisine"}
+        )
+
+      assert %{"data" => data} = json_response(conn, 200)
+      assert is_binary(data["saisine_syndic_letter"])
+      assert data["saisine_syndic_letter"] =~ "Saisine officielle"
+      assert is_nil(data["mise_en_demeure_letter"])
+    end
+
+    test "génère mise_en_demeure indépendamment", %{conn: conn} do
+      {building, user} = setup_with_president()
+
+      {:ok, d} =
+        KomunBackend.Diligences.create_diligence(building.id, user, %{"title" => "Sujet test"})
+
+      conn =
+        conn
+        |> authed(user)
+        |> post(
+          ~p"/api/v1/buildings/#{building.id}/diligences/#{d.id}/generate-letter",
+          %{"kind" => "mise_en_demeure"}
+        )
+
+      assert %{"data" => data} = json_response(conn, 200)
+      assert data["mise_en_demeure_letter"] =~ "Mise en demeure"
+    end
+
+    test "renvoie 400 si kind invalide", %{conn: conn} do
+      {building, user} = setup_with_president()
+
+      {:ok, d} =
+        KomunBackend.Diligences.create_diligence(building.id, user, %{"title" => "Sujet test"})
+
+      conn =
+        conn
+        |> authed(user)
+        |> post(
+          ~p"/api/v1/buildings/#{building.id}/diligences/#{d.id}/generate-letter",
+          %{"kind" => "n_importe_quoi"}
+        )
+
+      assert json_response(conn, 400)
+    end
+
+    test "renvoie 403 à un copropriétaire", %{conn: conn} do
+      {building, _president} = setup_with_president()
+      copro = insert_user!()
+      {:ok, _} = Buildings.add_member(building.id, copro.id, :coproprietaire)
+
+      {president, _} = {insert_user!(:syndic_manager), nil}
+      _ = president
+      # On a besoin d'une diligence existante : on la crée via le syndic global.
+      syndic = insert_user!(:syndic_manager)
+
+      {:ok, d} =
+        KomunBackend.Diligences.create_diligence(building.id, syndic, %{"title" => "Sujet test"})
+
+      conn =
+        conn
+        |> authed(copro)
+        |> post(
+          ~p"/api/v1/buildings/#{building.id}/diligences/#{d.id}/generate-letter",
+          %{"kind" => "saisine"}
+        )
+
+      assert json_response(conn, 403)
+    end
+  end
+
   describe "DELETE /api/v1/buildings/:bid/diligences/:id/files/:fid" do
     setup do
       tmp = Path.join(System.tmp_dir!(), "diligence-test-#{System.unique_integer([:positive])}.pdf")
