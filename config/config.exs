@@ -26,7 +26,14 @@ config :komun_backend, KomunBackend.Auth.Guardian,
 # ── Oban background jobs ──────────────────────────────────────────────────────
 config :komun_backend, Oban,
   repo: KomunBackend.Repo,
-  plugins: [Oban.Plugins.Pruner],
+  plugins: [
+    Oban.Plugins.Pruner,
+    {Oban.Plugins.Cron,
+     crontab: [
+       # Toutes les 30 minutes : enfile un poll par flux RSS activé.
+       {"*/30 * * * *", KomunBackend.LocalFeeds.Jobs.EnqueueAllFeedsJob}
+     ]}
+  ],
   queues: [
     default: 10,
     emails: 20,

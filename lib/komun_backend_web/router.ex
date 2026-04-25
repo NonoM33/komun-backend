@@ -185,6 +185,21 @@ defmodule KomunBackendWeb.Router do
     post "/buildings/:building_id/invites", InviteController, :create
     post "/invites/:token/join", InviteController, :join
 
+    # Local feeds (RSS) — read scope (any active member of the residence)
+    get "/residences/:residence_id/rss-feeds", RssFeedController, :index
+    get "/residences/:residence_id/rss-feeds/items", RssFeedController, :items
+  end
+
+  # ── Local feeds (RSS) — admin scope ──────────────────────────────────────
+  # CS members + super_admin can configure feeds for a residence.
+  scope "/api/v1", KomunBackendWeb do
+    pipe_through [:authenticated, KomunBackendWeb.Plugs.RequireResidenceAdmin]
+
+    post   "/residences/:residence_id/rss-feeds",             RssFeedController, :create
+    patch  "/residences/:residence_id/rss-feeds/:id",         RssFeedController, :update
+    put    "/residences/:residence_id/rss-feeds/:id",         RssFeedController, :update
+    delete "/residences/:residence_id/rss-feeds/:id",         RssFeedController, :delete
+    post   "/residences/:residence_id/rss-feeds/:id/refresh", RssFeedController, :refresh
   end
 
   # ── Dev login (guarded by ALLOW_DEV_LOGIN env var at runtime) ────────────
