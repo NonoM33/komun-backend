@@ -35,7 +35,7 @@ defmodule KomunBackend.Assistant do
 
   import Ecto.Query
   alias KomunBackend.{Accounts, AI, Buildings, Documents, Repo}
-  alias KomunBackend.Assistant.{AssistantMessage, Conversation}
+  alias KomunBackend.Assistant.{AssistantMessage, Conversation, Rules}
 
   @rate_limit_window_hours 24
   @max_question_length 2_000
@@ -143,9 +143,10 @@ defmodule KomunBackend.Assistant do
          :ok <- check_rate_limit(user) do
       context = Documents.context_for_ai(building_id, user.role)
       history = load_history_messages(conv.id)
+      system  = build_system_prompt_for(building_id)
 
       messages =
-        [%{role: :system, content: @system_prompt}] ++
+        [%{role: :system, content: system}] ++
           history ++
           [%{role: :user, content: build_user_prompt(context, question)}]
 
@@ -192,9 +193,10 @@ defmodule KomunBackend.Assistant do
          :ok <- authorize_member(user, building_id),
          :ok <- check_rate_limit(user) do
       context = Documents.context_for_ai(building_id, user.role)
+      system  = build_system_prompt_for(building_id)
 
       messages = [
-        %{role: :system, content: @system_prompt},
+        %{role: :system, content: system},
         %{role: :user, content: build_user_prompt(context, question)}
       ]
 
@@ -350,6 +352,10 @@ defmodule KomunBackend.Assistant do
     else
       {:error, :rate_limited, %{next_allowed_at: next_allowed_at(user)}}
     end
+  end
+
+  defp build_system_prompt_for(building_id) do
+    Rules.build_system_prompt(@system_prompt, Rules.list_active_rules(building_id))
   end
 
   defp build_user_prompt("", question) do
