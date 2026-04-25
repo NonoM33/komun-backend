@@ -113,6 +113,11 @@ defmodule KomunBackendWeb.Router do
     patch "/buildings/:building_id/diligences/:id/steps/:step_number",
           DiligenceController, :update_step
 
+    post   "/buildings/:building_id/diligences/:id/files",
+           DiligenceController, :upload_file
+    delete "/buildings/:building_id/diligences/:id/files/:file_id",
+           DiligenceController, :delete_file
+
     # Announcements
     resources "/buildings/:building_id/announcements", AnnouncementController,
       except: [:new, :edit]

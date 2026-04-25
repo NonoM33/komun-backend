@@ -245,4 +245,152 @@ defmodule KomunBackendWeb.DiligenceControllerTest do
       assert response(conn, 401)
     end
   end
+
+  describe "POST /api/v1/buildings/:bid/diligences/:id/files (upload)" do
+    setup do
+      tmp = Path.join(System.tmp_dir!(), "diligence-test-#{System.unique_integer([:positive])}.pdf")
+      File.write!(tmp, "%PDF-1.4 fake content for tests")
+      on_exit(fn -> File.rm(tmp) end)
+      {:ok, tmp: tmp}
+    end
+
+    test "attache un PDF à la diligence", %{conn: conn, tmp: tmp} do
+      {building, user} = setup_with_president()
+
+      {:ok, d} =
+        KomunBackend.Diligences.create_diligence(building.id, user, %{"title" => "Sujet test"})
+
+      upload = %Plug.Upload{
+        path: tmp,
+        filename: "journal.pdf",
+        content_type: "application/pdf"
+      }
+
+      conn =
+        conn
+        |> authed(user)
+        |> post(
+          ~p"/api/v1/buildings/#{building.id}/diligences/#{d.id}/files",
+          %{"file" => upload, "kind" => "journal", "step_number" => "2"}
+        )
+
+      assert %{"data" => data} = json_response(conn, 201)
+      assert length(data["files"]) == 1
+
+      [file] = data["files"]
+      assert file["kind"] == "journal"
+      assert file["step_number"] == 2
+      assert file["filename"] == "journal.pdf"
+      assert file["mime_type"] == "application/pdf"
+      assert file["file_url"] =~ "/uploads/diligences/#{d.id}/"
+    end
+
+    test "rejette un mime type non autorisé", %{conn: conn, tmp: tmp} do
+      {building, user} = setup_with_president()
+      {:ok, d} = KomunBackend.Diligences.create_diligence(building.id, user, %{"title" => "Sujet test"})
+
+      upload = %Plug.Upload{
+        path: tmp,
+        filename: "evil.exe",
+        content_type: "application/x-msdownload"
+      }
+
+      conn =
+        conn
+        |> authed(user)
+        |> post(~p"/api/v1/buildings/#{building.id}/diligences/#{d.id}/files", %{"file" => upload})
+
+      assert %{"error" => err} = json_response(conn, 422)
+      assert err =~ "Type de fichier"
+    end
+
+    test "rejette une requête sans fichier", %{conn: conn} do
+      {building, user} = setup_with_president()
+      {:ok, d} = KomunBackend.Diligences.create_diligence(building.id, user, %{"title" => "Sujet test"})
+
+      conn =
+        conn
+        |> authed(user)
+        |> post(~p"/api/v1/buildings/#{building.id}/diligences/#{d.id}/files", %{})
+
+      assert json_response(conn, 422)
+    end
+
+    test "renvoie 403 à un copropriétaire", %{conn: conn, tmp: tmp} do
+      {building, president} = setup_with_president()
+      {:ok, d} = KomunBackend.Diligences.create_diligence(building.id, president, %{"title" => "Sujet test"})
+
+      copro = insert_user!()
+      {:ok, _} = Buildings.add_member(building.id, copro.id, :coproprietaire)
+
+      upload = %Plug.Upload{
+        path: tmp,
+        filename: "ok.pdf",
+        content_type: "application/pdf"
+      }
+
+      conn =
+        conn
+        |> authed(copro)
+        |> post(~p"/api/v1/buildings/#{building.id}/diligences/#{d.id}/files", %{"file" => upload})
+
+      assert json_response(conn, 403)
+    end
+  end
+
+  describe "DELETE /api/v1/buildings/:bid/diligences/:id/files/:fid" do
+    setup do
+      tmp = Path.join(System.tmp_dir!(), "diligence-test-#{System.unique_integer([:positive])}.pdf")
+      File.write!(tmp, "%PDF-1.4 fake")
+      on_exit(fn -> File.rm(tmp) end)
+      {:ok, tmp: tmp}
+    end
+
+    test "supprime un fichier de sa diligence", %{conn: conn, tmp: tmp} do
+      {building, user} = setup_with_president()
+      {:ok, d} = KomunBackend.Diligences.create_diligence(building.id, user, %{"title" => "Sujet test"})
+
+      upload = %Plug.Upload{path: tmp, filename: "x.pdf", content_type: "application/pdf"}
+
+      conn1 =
+        conn
+        |> authed(user)
+        |> post(~p"/api/v1/buildings/#{building.id}/diligences/#{d.id}/files", %{"file" => upload})
+
+      [file] = json_response(conn1, 201)["data"]["files"]
+
+      conn2 =
+        build_conn()
+        |> authed(user)
+        |> delete(~p"/api/v1/buildings/#{building.id}/diligences/#{d.id}/files/#{file["id"]}")
+
+      assert response(conn2, 204)
+    end
+
+    test "renvoie 404 si on tente de supprimer un fichier d'une autre diligence", %{
+      conn: conn,
+      tmp: tmp
+    } do
+      {building, user} = setup_with_president()
+      {:ok, d_a} = KomunBackend.Diligences.create_diligence(building.id, user, %{"title" => "Diligence A"})
+      {:ok, d_b} = KomunBackend.Diligences.create_diligence(building.id, user, %{"title" => "Diligence B"})
+
+      upload = %Plug.Upload{path: tmp, filename: "x.pdf", content_type: "application/pdf"}
+
+      conn1 =
+        conn
+        |> authed(user)
+        |> post(~p"/api/v1/buildings/#{building.id}/diligences/#{d_a.id}/files", %{"file" => upload})
+
+      [file] = json_response(conn1, 201)["data"]["files"]
+
+      # On tente de supprimer le fichier de d_a via l'URL de d_b → 404
+      conn2 =
+        build_conn()
+        |> authed(user)
+        |> delete(~p"/api/v1/buildings/#{building.id}/diligences/#{d_b.id}/files/#{file["id"]}")
+
+      assert json_response(conn2, 404)
+    end
+  end
 end

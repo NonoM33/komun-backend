@@ -191,6 +191,36 @@ defmodule KomunBackend.Diligences do
   defp reload_on_success(other), do: other
 
   @doc """
+  Attache une pièce justificative (journal, attestation CERFA, photo,
+  constat huissier…) à une diligence. Ne valide pas le contenu : c'est
+  le controller qui contrôle taille / mime-type avant d'appeler cette
+  fonction (séparation des responsabilités — la validation des bytes
+  d'upload n'a rien à faire dans le contexte métier).
+  """
+  def attach_file(diligence_id, %User{} = user, attrs) do
+    attrs =
+      attrs
+      |> normalize_attrs()
+      |> Map.merge(%{
+        "diligence_id" => diligence_id,
+        "uploaded_by_id" => user.id
+      })
+
+    %DiligenceFile{}
+    |> DiligenceFile.changeset(attrs)
+    |> Repo.insert()
+  end
+
+  def get_file!(id), do: Repo.get!(DiligenceFile, id)
+
+  @doc """
+  Supprime une pièce justificative (et idéalement le fichier sur disque,
+  cf. controller). Renvoyé tel quel pour que le controller puisse
+  enchaîner sur le `File.rm/1`.
+  """
+  def delete_file(%DiligenceFile{} = file), do: Repo.delete(file)
+
+  @doc """
   Liste les utilisateurs privilégiés d'un bâtiment — utile pour les
   notifs futures. Renvoyé en V1 par le controller pour aider le front
   à afficher "Cette diligence est suivie par X, Y, Z".

@@ -2,8 +2,14 @@ defmodule KomunBackendWeb.DiligenceController do
   use KomunBackendWeb, :controller
 
   alias KomunBackend.{Buildings, Diligences}
-  alias KomunBackend.Diligences.{Diligence, Steps}
+  alias KomunBackend.Diligences.{Diligence, DiligenceFile, Steps}
   alias KomunBackend.Auth.Guardian
+
+  # Borne d'upload : on autorise large pour pouvoir attacher un journal
+  # détaillé sur plusieurs mois ou un constat d'huissier scanné en HD,
+  # mais pas le scan d'un livre entier. Ajustable plus tard si besoin.
+  @max_upload_bytes 15 * 1024 * 1024
+  @allowed_mime_types ~w(application/pdf image/jpeg image/png image/heic image/webp)
 
   # GET /api/v1/buildings/:building_id/diligences
   def index(conn, %{"building_id" => building_id} = params) do
@@ -129,6 +135,109 @@ defmodule KomunBackendWeb.DiligenceController do
     end
   end
 
+  # POST /api/v1/buildings/:building_id/diligences/:id/files (multipart)
+  def upload_file(conn, %{"building_id" => building_id, "id" => id} = params) do
+    user = Guardian.Plug.current_resource(conn)
+
+    with :ok <- authorize_privileged(conn, building_id, user) do
+      diligence = Diligences.get_diligence!(id)
+
+      cond do
+        diligence.building_id != building_id ->
+          conn |> put_status(:not_found) |> json(%{error: "Not found"}) |> halt()
+
+        true ->
+          do_upload(conn, diligence, user, params)
+      end
+    end
+  end
+
+  defp do_upload(conn, diligence, user, params) do
+    upload = Map.get(params, "file")
+
+    cond do
+      not match?(%Plug.Upload{}, upload) ->
+        conn
+        |> put_status(:unprocessable_entity)
+        |> json(%{error: "Fichier requis (multipart \"file\")"})
+        |> halt()
+
+      upload.content_type not in @allowed_mime_types ->
+        conn
+        |> put_status(:unprocessable_entity)
+        |> json(%{
+          error:
+            "Type de fichier refusé (autorisés : PDF, JPEG, PNG, HEIC, WebP)"
+        })
+        |> halt()
+
+      file_size(upload.path) > @max_upload_bytes ->
+        conn
+        |> put_status(:unprocessable_entity)
+        |> json(%{error: "Fichier trop volumineux (max #{@max_upload_bytes} octets)"})
+        |> halt()
+
+      true ->
+        case save_upload(upload, diligence.id) do
+          {:ok, relative_path} ->
+            attrs = %{
+              "kind" => Map.get(params, "kind", "autre"),
+              "step_number" => parse_step(params["step_number"]),
+              "filename" => upload.filename,
+              "file_url" => "/" <> relative_path,
+              "file_size_bytes" => file_size(upload.path),
+              "mime_type" => upload.content_type
+            }
+
+            case Diligences.attach_file(diligence.id, user, attrs) do
+              {:ok, _file} ->
+                fresh = Diligences.get_diligence!(diligence.id)
+                conn |> put_status(:created) |> json(%{data: diligence_json(fresh)})
+
+              {:error, cs} ->
+                conn
+                |> put_status(:unprocessable_entity)
+                |> json(%{errors: format_errors(cs)})
+            end
+
+          {:error, reason} ->
+            conn
+            |> put_status(:internal_server_error)
+            |> json(%{error: "Échec de l'enregistrement : #{inspect(reason)}"})
+        end
+    end
+  end
+
+  # DELETE /api/v1/buildings/:building_id/diligences/:id/files/:file_id
+  def delete_file(conn, %{
+        "building_id" => building_id,
+        "id" => id,
+        "file_id" => file_id
+      }) do
+    user = Guardian.Plug.current_resource(conn)
+
+    with :ok <- authorize_privileged(conn, building_id, user) do
+      diligence = Diligences.get_diligence!(id)
+      file = Diligences.get_file!(file_id)
+
+      cond do
+        diligence.building_id != building_id ->
+          conn |> put_status(:not_found) |> json(%{error: "Not found"}) |> halt()
+
+        file.diligence_id != diligence.id ->
+          # Le file_id appartient à une autre diligence — on ne laisse
+          # pas un appelant deviner l'existence d'une pièce qui n'est
+          # pas la sienne.
+          conn |> put_status(:not_found) |> json(%{error: "Not found"}) |> halt()
+
+        true ->
+          {:ok, _} = Diligences.delete_file(file)
+          maybe_remove_file(file.file_url)
+          send_resp(conn, :no_content, "")
+      end
+    end
+  end
+
   # ── Helpers ──────────────────────────────────────────────────────────────
 
   @privileged_roles [:super_admin, :syndic_manager, :syndic_staff, :president_cs, :membre_cs]
@@ -235,4 +344,65 @@ defmodule KomunBackendWeb.DiligenceController do
       end)
     end)
   end
+
+  defp save_upload(%Plug.Upload{filename: filename, path: tmp_path}, diligence_id) do
+    ext = Path.extname(filename)
+    unique_name = "#{System.unique_integer([:positive, :monotonic])}#{ext}"
+
+    # Stockage dans `priv/static/uploads/diligences/:diligence_id/` —
+    # même base que les documents, mais isolé par diligence pour
+    # qu'un `rm -rf` du dossier soit toujours sûr (purge complète d'un
+    # dossier sans risque de zapper d'autres fichiers).
+    dest_dir =
+      Application.app_dir(
+        :komun_backend,
+        "priv/static/uploads/diligences/#{diligence_id}"
+      )
+
+    File.mkdir_p!(dest_dir)
+    dest_path = Path.join(dest_dir, unique_name)
+
+    case File.cp(tmp_path, dest_path) do
+      :ok -> {:ok, "uploads/diligences/#{diligence_id}/#{unique_name}"}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp file_size(path) do
+    case File.stat(path) do
+      {:ok, %{size: size}} -> size
+      _ -> nil
+    end
+  end
+
+  defp parse_step(nil), do: nil
+  defp parse_step(""), do: nil
+
+  defp parse_step(n) when is_integer(n) do
+    if Steps.valid_number?(n), do: n, else: nil
+  end
+
+  defp parse_step(s) when is_binary(s) do
+    case Integer.parse(s) do
+      {n, ""} -> parse_step(n)
+      _ -> nil
+    end
+  end
+
+  defp parse_step(_), do: nil
+
+  # Best-effort : si on n'arrive pas à supprimer le fichier (chemin
+  # malformé, déjà parti…), la ligne en DB est déjà supprimée donc le
+  # fichier orphelin est bénin. On loggue mais on ne casse pas le
+  # contrat de l'endpoint.
+  defp maybe_remove_file("/" <> rel) do
+    abs = Application.app_dir(:komun_backend, Path.join("priv/static", rel))
+
+    case File.rm(abs) do
+      :ok -> :ok
+      {:error, reason} -> require Logger; Logger.warning("[diligences] could not remove #{abs}: #{inspect(reason)}"); :ok
+    end
+  end
+
+  defp maybe_remove_file(_), do: :ok
 end
