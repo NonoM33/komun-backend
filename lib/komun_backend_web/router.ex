@@ -138,6 +138,15 @@ defmodule KomunBackendWeb.Router do
     post "/buildings/:building_id/votes/:id/respond", VoteController, :respond
     put  "/buildings/:building_id/votes/:id/close",   VoteController, :close
 
+    # Battles (vote à élimination en plusieurs rounds, ex. choix de
+    # mobilier collectif). Création réservée CS + syndic ; tous les
+    # membres du bâtiment peuvent voter.
+    get  "/buildings/:building_id/battles",            BattleController, :index
+    post "/buildings/:building_id/battles",            BattleController, :create
+    get  "/buildings/:building_id/battles/:id",        BattleController, :show
+    post "/buildings/:building_id/battles/:id/vote",   BattleController, :cast_vote
+    post "/buildings/:building_id/battles/:id/advance", BattleController, :advance
+
     # Projects (copro devis workflow) — groups devis by project, then starts
     # a vote on the chosen devis.
     get    "/buildings/:building_id/projects",            ProjectController, :index

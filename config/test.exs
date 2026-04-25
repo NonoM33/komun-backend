@@ -18,6 +18,13 @@ config :komun_backend, KomunBackend.Auth.Guardian,
 
 config :komun_backend, Oban, testing: :inline
 
+# Les battles utilisent un job Oban schedulé à `ends_at` (J+3 par
+# défaut). En test, Oban `:inline` ignore `scheduled_at` et exécuterait
+# immédiatement la transition de round, ce qui rend le cycle non
+# testable. On bypass le scheduling : les tests appellent
+# `Battles.advance_battle!/1` directement.
+config :komun_backend, :skip_battle_scheduling, true
+
 config :komun_backend, KomunBackend.Mailer, adapter: Swoosh.Adapters.Test
 
 config :swoosh, :api_client, false
