@@ -13,7 +13,7 @@ defmodule KomunBackendWeb.IncidentController do
       incidents = Incidents.list_incidents(building_id, params, user)
 
       json(conn, %{
-        data: Enum.map(incidents, &incident_json(&1, privileged?))
+        data: Enum.map(incidents, &incident_json(&1, privileged?, user.id))
       })
     end
   end
@@ -28,12 +28,15 @@ defmodule KomunBackendWeb.IncidentController do
 
       cond do
         # Sécurité défensive : un incident `:council_only` ne doit jamais
-        # être servi à un non-privilégié, même via l'URL directe.
-        incident.visibility == :council_only and not privileged? ->
+        # être servi à un non-privilégié — sauf au créateur lui-même, qui
+        # garde la main sur son propre signalement (suivi de la résolution
+        # depuis la liste / l'URL directe).
+        incident.visibility == :council_only and not privileged? and
+            incident.reporter_id != user.id ->
           conn |> put_status(:not_found) |> json(%{error: "Not found"}) |> halt()
 
         true ->
-          json(conn, %{data: incident_json(incident, privileged?)})
+          json(conn, %{data: incident_json(incident, privileged?, user.id)})
       end
     end
   end
@@ -48,7 +51,7 @@ defmodule KomunBackendWeb.IncidentController do
 
       conn
       |> put_status(:created)
-      |> json(%{data: incident_json(incident, privileged?)})
+      |> json(%{data: incident_json(incident, privileged?, user.id)})
     else
       {:error, changeset} ->
         conn |> put_status(:unprocessable_entity) |> json(%{errors: format_errors(changeset)})
@@ -64,14 +67,15 @@ defmodule KomunBackendWeb.IncidentController do
       privileged? = Incidents.privileged?(building_id, user)
 
       cond do
-        # Personne d'autre que le conseil ne peut éditer un incident
-        # `:council_only` (l'incident n'est même pas censé exister pour eux).
+        # L'écriture sur un `:council_only` reste réservée au conseil — le
+        # créateur peut LIRE son propre signalement (cf. `show`) mais pas
+        # le modifier (statut, note de résolution, etc. = rôle du CS).
         incident.visibility == :council_only and not privileged? ->
           conn |> put_status(:not_found) |> json(%{error: "Not found"}) |> halt()
 
         true ->
           case Incidents.update_incident(incident, attrs) do
-            {:ok, updated} -> json(conn, %{data: incident_json(updated, privileged?)})
+            {:ok, updated} -> json(conn, %{data: incident_json(updated, privileged?, user.id)})
             {:error, cs} -> conn |> put_status(:unprocessable_entity) |> json(%{errors: format_errors(cs)})
           end
       end
@@ -103,7 +107,7 @@ defmodule KomunBackendWeb.IncidentController do
       case Incidents.confirm_ai_answer(incident, user.id) do
         {:ok, updated} ->
           updated = KomunBackend.Repo.preload(updated, [:reporter, :assignee, comments: :author])
-          json(conn, %{data: incident_json(updated, true)})
+          json(conn, %{data: incident_json(updated, true, user.id)})
 
         {:error, cs} ->
           conn |> put_status(:unprocessable_entity) |> json(%{errors: format_errors(cs)})
@@ -121,7 +125,7 @@ defmodule KomunBackendWeb.IncidentController do
       case Incidents.unconfirm_ai_answer(incident) do
         {:ok, updated} ->
           updated = KomunBackend.Repo.preload(updated, [:reporter, :assignee, comments: :author])
-          json(conn, %{data: incident_json(updated, true)})
+          json(conn, %{data: incident_json(updated, true, user.id)})
 
         {:error, cs} ->
           conn |> put_status(:unprocessable_entity) |> json(%{errors: format_errors(cs)})
@@ -145,7 +149,7 @@ defmodule KomunBackendWeb.IncidentController do
       case Incidents.update_ai_answer(incident, ai_answer, user.id, confirm: confirm?) do
         {:ok, updated} ->
           updated = KomunBackend.Repo.preload(updated, [:reporter, :assignee, comments: :author])
-          json(conn, %{data: incident_json(updated, true)})
+          json(conn, %{data: incident_json(updated, true, user.id)})
 
         {:error, cs} ->
           conn |> put_status(:unprocessable_entity) |> json(%{errors: format_errors(cs)})
@@ -181,17 +185,17 @@ defmodule KomunBackendWeb.IncidentController do
     end
   end
 
-  defp incident_json(inc, privileged?) do
+  defp incident_json(inc, privileged?, viewer_id) do
     comments = case inc.comments do
       %Ecto.Association.NotLoaded{} -> []
       comments -> Enum.map(comments, &comment_json/1)
     end
 
     # Pour `:council_only`, on ne renvoie JAMAIS l'identité du signaleur,
-    # même au syndic / conseil. La règle métier est : "ton nom n'apparaît
-    # nulle part" — un membre du CS qui inspecte le payload ne doit pas
-    # pouvoir voir qui a signalé. Si la table doit pourtant garder
-    # `reporter_id` pour audit, c'est consultable en base, pas via l'API.
+    # même au syndic / conseil — ni au signaleur lui-même via cet objet
+    # `reporter`. La règle métier est : "ton nom n'apparaît nulle part".
+    # Le frontend reçoit `viewer_is_reporter` plus bas pour savoir s'il
+    # doit afficher "ton signalement", sans avoir à exposer l'UUID.
     reporter =
       cond do
         inc.visibility == :council_only -> nil
@@ -202,6 +206,12 @@ defmodule KomunBackendWeb.IncidentController do
     # signaleur sont masqués aussi sur `:council_only`.
     location = if inc.visibility == :council_only, do: nil, else: inc.location
     lot_number = if inc.visibility == :council_only, do: nil, else: inc.lot_number
+
+    # Flag dérivé : le viewer EST-il l'auteur ? Calculé côté serveur pour
+    # ne jamais exposer `reporter_id` côté client. Le frontend l'utilise
+    # pour différencier le badge ("Visible par toi et le conseil" vs
+    # "Signalement confidentiel — auteur masqué").
+    viewer_is_reporter = not is_nil(viewer_id) and inc.reporter_id == viewer_id
 
     %{
       id: inc.id,
@@ -230,7 +240,8 @@ defmodule KomunBackendWeb.IncidentController do
       # `viewer_privileged` indique au front si l'utilisateur peut voir
       # les incidents `:council_only` (utile pour afficher l'onglet ou le
       # filtre adapté). Ne révèle pas qui a signalé pour autant.
-      viewer_privileged: privileged?
+      viewer_privileged: privileged?,
+      viewer_is_reporter: viewer_is_reporter
     }
   end
 

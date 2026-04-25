@@ -49,13 +49,23 @@ defmodule KomunBackend.Incidents do
   defp apply_filter(q, :severity, v), do: where(q, [i], i.severity == ^v)
 
   # Si le viewer n'est pas membre privilégié, on cache les incidents
-  # `:council_only` — ils ne sortent ni de la liste ni des endpoints qui
-  # passent par cette fonction.
+  # `:council_only` — sauf ceux qu'il a lui-même signalés. L'anonymat
+  # protège vis-à-vis des AUTRES, pas vis-à-vis de soi : sinon le créateur
+  # perd la main sur sa propre data dès qu'il clique "Envoyer".
   defp apply_visibility(q, building_id, viewer) do
-    if privileged?(building_id, viewer) do
-      q
-    else
-      where(q, [i], i.visibility == :standard)
+    cond do
+      privileged?(building_id, viewer) ->
+        q
+
+      is_nil(viewer) ->
+        where(q, [i], i.visibility == :standard)
+
+      true ->
+        where(
+          q,
+          [i],
+          i.visibility == :standard or i.reporter_id == ^viewer.id
+        )
     end
   end
 
