@@ -17,9 +17,14 @@ defmodule KomunBackend.Votes.Vote do
     field :is_anonymous, :boolean, default: false
     field :vote_type, :string, default: "binary"
 
+    # Round number d'une battle (nullable). Quand `battle_id` est posé,
+    # ce vote est un round d'un tournoi — voir `KomunBackend.Battles`.
+    field :round_number, :integer
+
     belongs_to :building, KomunBackend.Buildings.Building
     belongs_to :created_by, KomunBackend.Accounts.User
     belongs_to :project, KomunBackend.Projects.Project
+    belongs_to :battle, KomunBackend.Battles.Battle
 
     has_many :responses, KomunBackend.Votes.VoteResponse
     has_many :options, VoteOption, on_replace: :delete
@@ -37,7 +42,9 @@ defmodule KomunBackend.Votes.Vote do
     :vote_type,
     :building_id,
     :created_by_id,
-    :project_id
+    :project_id,
+    :battle_id,
+    :round_number
   ]
 
   def changeset(vote, attrs) do
