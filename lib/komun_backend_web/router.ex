@@ -102,6 +102,17 @@ defmodule KomunBackendWeb.Router do
       post   "/escalate",         DoleanceController, :escalate
     end
 
+    # Diligences (procédure encadrée pour troubles anormaux du voisinage,
+    # réservée au syndic + conseil syndical — gating dans le controller).
+    get   "/buildings/:building_id/diligences",        DiligenceController, :index
+    post  "/buildings/:building_id/diligences",        DiligenceController, :create
+    get   "/buildings/:building_id/diligences/:id",    DiligenceController, :show
+    patch "/buildings/:building_id/diligences/:id",    DiligenceController, :update
+    put   "/buildings/:building_id/diligences/:id",    DiligenceController, :update
+
+    patch "/buildings/:building_id/diligences/:id/steps/:step_number",
+          DiligenceController, :update_step
+
     # Announcements
     resources "/buildings/:building_id/announcements", AnnouncementController,
       except: [:new, :edit]
