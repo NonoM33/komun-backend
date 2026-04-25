@@ -90,14 +90,31 @@ defmodule KomunBackend.Residences do
 
   def create_residence(attrs) do
     %Residence{}
-    |> Residence.changeset(ensure_join_code(attrs))
+    |> Residence.initial_changeset(ensure_join_code(attrs))
     |> Repo.insert()
   end
 
+  @doc """
+  Met à jour une résidence. Le `join_code` est volontairement strippé
+  des attrs reçus AVANT le cast : même si un caller distrait ou un
+  client bogué envoie `{ "join_code": "XXX" }` dans un PATCH, le code
+  reste intact.
+
+  Règle documentée dans `CLAUDE.md` à la racine du repo frontend.
+  Si un jour on veut vraiment rotater un code, il faut une fonction
+  dédiée (rotate_join_code) gated derrière un bouton DANGER admin —
+  pas un PATCH /residences/:id banal.
+  """
   def update_residence(%Residence{} = residence, attrs) do
     residence
-    |> Residence.changeset(attrs)
+    |> Residence.changeset(strip_join_code(attrs))
     |> Repo.update()
+  end
+
+  defp strip_join_code(attrs) when is_map(attrs) do
+    attrs
+    |> Map.delete(:join_code)
+    |> Map.delete("join_code")
   end
 
   def delete_residence(%Residence{} = residence) do

@@ -6,17 +6,35 @@ defmodule KomunBackendWeb.IncidentController do
 
   # GET /api/v1/buildings/:building_id/incidents
   def index(conn, %{"building_id" => building_id} = params) do
+    user = Guardian.Plug.current_resource(conn)
+
     with :ok <- authorize_building(conn, building_id) do
-      incidents = Incidents.list_incidents(building_id, params)
-      json(conn, %{data: Enum.map(incidents, &incident_json/1)})
+      privileged? = Incidents.privileged?(building_id, user)
+      incidents = Incidents.list_incidents(building_id, params, user)
+
+      json(conn, %{
+        data: Enum.map(incidents, &incident_json(&1, privileged?))
+      })
     end
   end
 
   # GET /api/v1/buildings/:building_id/incidents/:id
   def show(conn, %{"building_id" => building_id, "id" => id}) do
+    user = Guardian.Plug.current_resource(conn)
+
     with :ok <- authorize_building(conn, building_id) do
       incident = Incidents.get_incident!(id)
-      json(conn, %{data: incident_json(incident)})
+      privileged? = Incidents.privileged?(building_id, user)
+
+      cond do
+        # Sécurité défensive : un incident `:council_only` ne doit jamais
+        # être servi à un non-privilégié, même via l'URL directe.
+        incident.visibility == :council_only and not privileged? ->
+          conn |> put_status(:not_found) |> json(%{error: "Not found"}) |> halt()
+
+        true ->
+          json(conn, %{data: incident_json(incident, privileged?)})
+      end
     end
   end
 
@@ -26,9 +44,11 @@ defmodule KomunBackendWeb.IncidentController do
 
     with :ok <- authorize_building(conn, building_id),
          {:ok, incident} <- Incidents.create_incident(building_id, user.id, attrs) do
+      privileged? = Incidents.privileged?(building_id, user)
+
       conn
       |> put_status(:created)
-      |> json(%{data: incident_json(incident)})
+      |> json(%{data: incident_json(incident, privileged?)})
     else
       {:error, changeset} ->
         conn |> put_status(:unprocessable_entity) |> json(%{errors: format_errors(changeset)})
@@ -37,12 +57,23 @@ defmodule KomunBackendWeb.IncidentController do
 
   # PUT /api/v1/buildings/:building_id/incidents/:id
   def update(conn, %{"building_id" => building_id, "id" => id, "incident" => attrs}) do
+    user = Guardian.Plug.current_resource(conn)
+
     with :ok <- authorize_building(conn, building_id) do
       incident = Incidents.get_incident!(id)
+      privileged? = Incidents.privileged?(building_id, user)
 
-      case Incidents.update_incident(incident, attrs) do
-        {:ok, updated} -> json(conn, %{data: incident_json(updated)})
-        {:error, cs} -> conn |> put_status(:unprocessable_entity) |> json(%{errors: format_errors(cs)})
+      cond do
+        # Personne d'autre que le conseil ne peut éditer un incident
+        # `:council_only` (l'incident n'est même pas censé exister pour eux).
+        incident.visibility == :council_only and not privileged? ->
+          conn |> put_status(:not_found) |> json(%{error: "Not found"}) |> halt()
+
+        true ->
+          case Incidents.update_incident(incident, attrs) do
+            {:ok, updated} -> json(conn, %{data: incident_json(updated, privileged?)})
+            {:error, cs} -> conn |> put_status(:unprocessable_entity) |> json(%{errors: format_errors(cs)})
+          end
       end
     end
   end
@@ -67,7 +98,7 @@ defmodule KomunBackendWeb.IncidentController do
       case Incidents.confirm_ai_answer(incident, user.id) do
         {:ok, updated} ->
           updated = KomunBackend.Repo.preload(updated, [:reporter, :assignee, comments: :author])
-          json(conn, %{data: incident_json(updated)})
+          json(conn, %{data: incident_json(updated, true)})
 
         {:error, cs} ->
           conn |> put_status(:unprocessable_entity) |> json(%{errors: format_errors(cs)})
@@ -85,7 +116,31 @@ defmodule KomunBackendWeb.IncidentController do
       case Incidents.unconfirm_ai_answer(incident) do
         {:ok, updated} ->
           updated = KomunBackend.Repo.preload(updated, [:reporter, :assignee, comments: :author])
-          json(conn, %{data: incident_json(updated)})
+          json(conn, %{data: incident_json(updated, true)})
+
+        {:error, cs} ->
+          conn |> put_status(:unprocessable_entity) |> json(%{errors: format_errors(cs)})
+      end
+    end
+  end
+
+  # PUT /api/v1/buildings/:building_id/incidents/:id/ai-answer
+  #
+  # Edit the AI answer text (and optionally validate it in one shot by
+  # passing `confirm: true`). Privileged members only — residents see the
+  # saved version, confirmed or not, from the list endpoint.
+  def update_ai_answer(conn, %{"building_id" => building_id, "id" => id} = params) do
+    user = Guardian.Plug.current_resource(conn)
+    ai_answer = Map.get(params, "ai_answer", "")
+    confirm? = params["confirm"] == true
+
+    with :ok <- authorize_privileged(conn, building_id, user) do
+      incident = Incidents.get_incident!(id)
+
+      case Incidents.update_ai_answer(incident, ai_answer, user.id, confirm: confirm?) do
+        {:ok, updated} ->
+          updated = KomunBackend.Repo.preload(updated, [:reporter, :assignee, comments: :author])
+          json(conn, %{data: incident_json(updated, true)})
 
         {:error, cs} ->
           conn |> put_status(:unprocessable_entity) |> json(%{errors: format_errors(cs)})
@@ -121,11 +176,27 @@ defmodule KomunBackendWeb.IncidentController do
     end
   end
 
-  defp incident_json(inc) do
+  defp incident_json(inc, privileged?) do
     comments = case inc.comments do
       %Ecto.Association.NotLoaded{} -> []
       comments -> Enum.map(comments, &comment_json/1)
     end
+
+    # Pour `:council_only`, on ne renvoie JAMAIS l'identité du signaleur,
+    # même au syndic / conseil. La règle métier est : "ton nom n'apparaît
+    # nulle part" — un membre du CS qui inspecte le payload ne doit pas
+    # pouvoir voir qui a signalé. Si la table doit pourtant garder
+    # `reporter_id` pour audit, c'est consultable en base, pas via l'API.
+    reporter =
+      cond do
+        inc.visibility == :council_only -> nil
+        true -> maybe_user(inc.reporter)
+      end
+
+    # Lot/locale qui pourraient permettre d'identifier indirectement le
+    # signaleur sont masqués aussi sur `:council_only`.
+    location = if inc.visibility == :council_only, do: nil, else: inc.location
+    lot_number = if inc.visibility == :council_only, do: nil, else: inc.lot_number
 
     %{
       id: inc.id,
@@ -135,12 +206,13 @@ defmodule KomunBackendWeb.IncidentController do
       severity: inc.severity,
       status: inc.status,
       photo_urls: inc.photo_urls,
-      location: inc.location,
-      lot_number: inc.lot_number,
+      location: location,
+      lot_number: lot_number,
       resolution_note: inc.resolution_note,
       resolved_at: inc.resolved_at,
       building_id: inc.building_id,
-      reporter: maybe_user(inc.reporter),
+      visibility: inc.visibility,
+      reporter: reporter,
       assignee: maybe_user(inc.assignee),
       ai_answer: inc.ai_answer,
       ai_answered_at: inc.ai_answered_at,
@@ -149,7 +221,11 @@ defmodule KomunBackendWeb.IncidentController do
       ai_answer_confirmed_by_id: inc.ai_answer_confirmed_by_id,
       comments: comments,
       inserted_at: inc.inserted_at,
-      updated_at: inc.updated_at
+      updated_at: inc.updated_at,
+      # `viewer_privileged` indique au front si l'utilisateur peut voir
+      # les incidents `:council_only` (utile pour afficher l'onglet ou le
+      # filtre adapté). Ne révèle pas qui a signalé pour autant.
+      viewer_privileged: privileged?
     }
   end
 

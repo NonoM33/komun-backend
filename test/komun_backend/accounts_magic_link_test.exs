@@ -36,7 +36,7 @@ defmodule KomunBackend.AccountsMagicLinkTest do
 
           {:ok, r} =
             %KomunBackend.Residences.Residence{}
-            |> KomunBackend.Residences.Residence.changeset(%{
+            |> KomunBackend.Residences.Residence.initial_changeset(%{
               name: "Résidence #{System.unique_integer([:positive])}",
               join_code: residence_code,
               organization_id: org.id
@@ -50,7 +50,7 @@ defmodule KomunBackend.AccountsMagicLinkTest do
       end
 
     %Building{}
-    |> Building.changeset(
+    |> Building.initial_changeset(
       Map.merge(
         %{
           name: "Résidence Test",

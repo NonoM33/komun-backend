@@ -28,22 +28,40 @@ defmodule KomunBackend.Buildings.Building do
     timestamps(type: :utc_datetime)
   end
 
-  @cast_fields ~w(name address city postal_code country lot_count construction_year
-                  cover_url settings join_code organization_id residence_id)a
+  # IMPORTANT : `join_code` ne fait PAS partie des champs castables sur
+  # les changesets d'édition. Le code a été communiqué aux copropriétaires
+  # hors de l'appli — le changer silencieusement casse l'onboarding pour
+  # tous les voisins. Voir CLAUDE.md à la racine du repo frontend pour la
+  # règle complète. Les seules écritures légitimes du champ passent par
+  # `initial_changeset/2` (création d'un bâtiment neuf).
+  @edit_fields ~w(name address city postal_code country lot_count construction_year
+                  cover_url settings organization_id residence_id)a
+
+  @create_fields [:join_code | @edit_fields]
 
   def changeset(building, attrs) do
     building
-    |> cast(attrs, @cast_fields)
+    |> cast(attrs, @edit_fields)
     |> validate_required([:name, :address, :city, :postal_code, :residence_id])
     |> validate_number(:construction_year, greater_than: 1800, less_than_or_equal_to: 2030)
-    |> unique_constraint(:join_code)
   end
 
   # Admin changeset — organization_id optional (super_admin creates standalone buildings)
   def admin_changeset(building, attrs) do
     building
-    |> cast(attrs, @cast_fields)
+    |> cast(attrs, @edit_fields)
     |> validate_required([:name, :address, :city, :postal_code])
+    |> validate_number(:construction_year, greater_than: 1800, less_than_or_equal_to: 2030)
+  end
+
+  @doc """
+  Changeset utilisé uniquement à la CRÉATION d'un bâtiment neuf (accepte
+  et exige `:join_code`). Ne PAS utiliser pour une édition.
+  """
+  def initial_changeset(building, attrs) do
+    building
+    |> cast(attrs, @create_fields)
+    |> validate_required([:name, :address, :city, :postal_code, :join_code])
     |> validate_number(:construction_year, greater_than: 1800, less_than_or_equal_to: 2030)
     |> unique_constraint(:join_code)
   end

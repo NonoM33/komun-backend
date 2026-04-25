@@ -33,7 +33,38 @@ defmodule KomunBackend.Residences.Residence do
     timestamps(type: :utc_datetime)
   end
 
+  # IMPORTANT : le `join_code` est volontairement EXCLU du cast ici. Le
+  # code a été communiqué aux copropriétaires en dehors de l'appli (mails,
+  # affiches, SMS) — le changer silencieusement casse l'onboarding en cours
+  # pour des dizaines de voisins. Voir `CLAUDE.md` à la racine du repo
+  # frontend pour la règle complète (bouton DANGER, email de notification,
+  # etc.). Pour la seule création d'une résidence neuve, passer par
+  # `initial_changeset/2` qui l'accepte.
   def changeset(residence, attrs) do
+    residence
+    |> cast(attrs, [
+      :name,
+      :slug,
+      :address,
+      :city,
+      :postal_code,
+      :country,
+      :cover_url,
+      :settings,
+      :is_active,
+      :organization_id
+    ])
+    |> validate_required([:name])
+    |> validate_length(:name, min: 2, max: 160)
+    |> put_slug()
+  end
+
+  @doc """
+  Changeset utilisé uniquement à la CRÉATION, quand on a besoin d'écrire
+  le `join_code` initial (qui vient de `Residences.generate_join_code/0`).
+  Ne PAS réutiliser pour une édition — cf. règle ci-dessus.
+  """
+  def initial_changeset(residence, attrs) do
     residence
     |> cast(attrs, [
       :name,
@@ -48,7 +79,7 @@ defmodule KomunBackend.Residences.Residence do
       :is_active,
       :organization_id
     ])
-    |> validate_required([:name])
+    |> validate_required([:name, :join_code])
     |> validate_length(:name, min: 2, max: 160)
     |> put_slug()
     |> unique_constraint(:join_code)

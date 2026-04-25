@@ -41,6 +41,10 @@ defmodule KomunBackendWeb.Router do
     # `/buildings/verify_code` reste en place pour la rétrocompat.
     get "/codes/verify", ResidenceController, :verify_code
     get "/buildings/verify_code", BuildingController, :verify_code
+
+    # GDPR consent log — accepts anonymous visitors (visitor_id param)
+    # or authenticated users (user_id attached via optional auth).
+    post "/consents", ConsentController, :create
   end
 
   # ── Authenticated routes ──────────────────────────────────────────────────
@@ -85,6 +89,17 @@ defmodule KomunBackendWeb.Router do
       post "/comments", IncidentCommentController, :create
       post "/confirm-ai", IncidentController, :confirm_ai_answer
       delete "/confirm-ai", IncidentController, :unconfirm_ai_answer
+      put "/ai-answer", IncidentController, :update_ai_answer
+    end
+
+    # Doléances (réclamations collectives : rampe de parking trop anguleuse,
+    # défaut de construction, etc.)
+    resources "/buildings/:building_id/doleances", DoleanceController, except: [:new, :edit] do
+      post   "/support",          DoleanceController, :add_support
+      delete "/support",          DoleanceController, :remove_support
+      post   "/generate-letter",  DoleanceController, :generate_letter
+      post   "/suggest-experts",  DoleanceController, :suggest_experts
+      post   "/escalate",         DoleanceController, :escalate
     end
 
     # Announcements
@@ -163,6 +178,8 @@ defmodule KomunBackendWeb.Router do
   scope "/api/v1/admin", KomunBackendWeb do
     pipe_through [:authenticated, :require_super_admin]
 
+    get    "/analytics",                       AdminController, :analytics
+    get    "/residents/pending",               AdminController, :pending_residents
     get    "/users",                           AdminController, :list_users
     get    "/users/:id",                       AdminController, :show_user
     put    "/users/:id/role",                  AdminController, :update_user_role
@@ -173,7 +190,8 @@ defmodule KomunBackendWeb.Router do
     delete "/users/:id/onboarding",            AdminController, :reset_onboarding
     get    "/buildings",                       AdminController, :list_buildings
     post   "/buildings",                       AdminController, :create_building
-    post   "/buildings/:id/members",           AdminController, :add_member
-    delete "/buildings/:id/members/:user_id",  AdminController, :remove_member
+    post   "/buildings/:id/members",                  AdminController, :add_member
+    put    "/buildings/:id/members/:user_id/role",    AdminController, :update_member_role
+    delete "/buildings/:id/members/:user_id",         AdminController, :remove_member
   end
 end

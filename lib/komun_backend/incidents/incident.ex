@@ -20,6 +20,15 @@ defmodule KomunBackend.Incidents.Incident do
     field :location, :string
     field :lot_number, :string
 
+    # Niveau de confidentialité :
+    # - :standard     → visible à tous les membres du bâtiment
+    # - :council_only → réservé au syndic / conseil syndical / super_admin.
+    #                   L'identité du signaleur n'est jamais divulguée dans
+    #                   le payload sérialisé, l'IA n'est pas déclenchée
+    #                   (contenu sensible) et les notifs push ne partent
+    #                   qu'aux rôles privilégiés.
+    field :visibility, Ecto.Enum, values: [:standard, :council_only], default: :standard
+
     # AI triage — populated asynchronously after creation. Residents see it
     # as "réponse proposée par l'assistant" until the syndic / conseil
     # confirms it (ai_answer_confirmed_at set).
@@ -42,7 +51,7 @@ defmodule KomunBackend.Incidents.Incident do
     incident
     |> cast(attrs, [:title, :description, :category, :severity, :status,
                     :photo_urls, :location, :lot_number, :building_id, :reporter_id,
-                    :assignee_id, :resolution_note,
+                    :assignee_id, :resolution_note, :visibility,
                     :ai_answer, :ai_answered_at, :ai_model,
                     :ai_answer_confirmed_at, :ai_answer_confirmed_by_id])
     |> validate_required([:title, :description, :category, :building_id, :reporter_id])
