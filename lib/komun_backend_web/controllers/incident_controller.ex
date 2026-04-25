@@ -87,9 +87,14 @@ defmodule KomunBackendWeb.IncidentController do
     end
   end
 
-  # POST /api/v1/buildings/:building_id/incidents/:id/confirm-ai
+  # POST /api/v1/buildings/:building_id/incidents/:incident_id/confirm-ai
   # Restricted to privileged members (syndic + conseil + super_admin).
-  def confirm_ai_answer(conn, %{"building_id" => building_id, "id" => id}) do
+  #
+  # NB : Phoenix nomme le path param `:incident_id` (et non `:id`) pour
+  # les routes member définies à l'intérieur d'un bloc `resources do …
+  # end`. Sans ça la fonction ne matche pas quand le client envoie un
+  # body vide → 400 silencieux côté UI (cf. fix 2026-04-25).
+  def confirm_ai_answer(conn, %{"building_id" => building_id, "incident_id" => id}) do
     user = Guardian.Plug.current_resource(conn)
 
     with :ok <- authorize_privileged(conn, building_id, user) do
@@ -106,8 +111,8 @@ defmodule KomunBackendWeb.IncidentController do
     end
   end
 
-  # DELETE /api/v1/buildings/:building_id/incidents/:id/confirm-ai
-  def unconfirm_ai_answer(conn, %{"building_id" => building_id, "id" => id}) do
+  # DELETE /api/v1/buildings/:building_id/incidents/:incident_id/confirm-ai
+  def unconfirm_ai_answer(conn, %{"building_id" => building_id, "incident_id" => id}) do
     user = Guardian.Plug.current_resource(conn)
 
     with :ok <- authorize_privileged(conn, building_id, user) do
@@ -124,12 +129,12 @@ defmodule KomunBackendWeb.IncidentController do
     end
   end
 
-  # PUT /api/v1/buildings/:building_id/incidents/:id/ai-answer
+  # PUT /api/v1/buildings/:building_id/incidents/:incident_id/ai-answer
   #
   # Edit the AI answer text (and optionally validate it in one shot by
   # passing `confirm: true`). Privileged members only — residents see the
   # saved version, confirmed or not, from the list endpoint.
-  def update_ai_answer(conn, %{"building_id" => building_id, "id" => id} = params) do
+  def update_ai_answer(conn, %{"building_id" => building_id, "incident_id" => id} = params) do
     user = Guardian.Plug.current_resource(conn)
     ai_answer = Map.get(params, "ai_answer", "")
     confirm? = params["confirm"] == true
