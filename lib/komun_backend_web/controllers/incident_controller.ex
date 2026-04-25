@@ -148,6 +148,177 @@ defmodule KomunBackendWeb.IncidentController do
     end
   end
 
+  # ── Suivi des dossiers (cases) ─────────────────────────────────────────────
+
+  # GET /api/v1/buildings/:building_id/incidents/cases
+  # Liste les dossiers ouverts (status :open / :in_progress) avec metrics
+  # d'attente calculées et le dernier événement de la timeline.
+  def open_cases(conn, %{"building_id" => building_id}) do
+    user = Guardian.Plug.current_resource(conn)
+
+    with :ok <- authorize_building(conn, building_id) do
+      privileged? = Incidents.privileged?(building_id, user)
+      cases = Incidents.list_open_cases(building_id, user)
+      can_follow_up? = Incidents.follow_up_allowed?(building_id, user)
+
+      json(conn, %{
+        data: Enum.map(cases, &case_json(&1, privileged?)),
+        meta: %{
+          can_follow_up: can_follow_up?,
+          viewer_privileged: privileged?
+        }
+      })
+    end
+  end
+
+  # POST /api/v1/buildings/:building_id/incidents/:id/follow-ups
+  def add_follow_up(conn, %{"building_id" => building_id, "id" => id} = params) do
+    user = Guardian.Plug.current_resource(conn)
+    message = String.trim(params["message"] || "")
+
+    cond do
+      not (String.length(message) >= 10 and String.length(message) <= 2000) ->
+        conn
+        |> put_status(:unprocessable_entity)
+        |> json(%{
+          error: "Le message de relance doit faire entre 10 et 2000 caractères."
+        })
+
+      true ->
+        with :ok <- authorize_building(conn, building_id) do
+          incident = Incidents.get_incident!(id)
+
+          cond do
+            incident.visibility == :council_only and
+                not Incidents.privileged?(building_id, user) ->
+              conn |> put_status(:not_found) |> json(%{error: "Not found"})
+
+            true ->
+              case Incidents.add_follow_up(incident, user, message) do
+                {:ok, %{event: event, comment: _comment}} ->
+                  conn
+                  |> put_status(:created)
+                  |> json(%{data: event_json(event |> KomunBackend.Repo.preload(:actor))})
+
+                {:error, :forbidden} ->
+                  conn
+                  |> put_status(:forbidden)
+                  |> json(%{
+                    error:
+                      "Seul le conseil syndical (ou le syndic) peut envoyer une relance officielle."
+                  })
+
+                {:error, :incident_closed} ->
+                  conn
+                  |> put_status(:unprocessable_entity)
+                  |> json(%{error: "Ce dossier est clos — il n'accepte plus de relance."})
+
+                {:error, %Ecto.Changeset{} = cs} ->
+                  conn
+                  |> put_status(:unprocessable_entity)
+                  |> json(%{errors: format_errors(cs)})
+              end
+          end
+        end
+    end
+  end
+
+  # GET /api/v1/buildings/:building_id/incidents/:id/events
+  def events(conn, %{"building_id" => building_id, "id" => id}) do
+    user = Guardian.Plug.current_resource(conn)
+
+    with :ok <- authorize_building(conn, building_id) do
+      case Incidents.list_events(id, user) do
+        {:ok, events} -> json(conn, %{data: Enum.map(events, &event_json/1)})
+        {:error, :not_found} -> conn |> put_status(:not_found) |> json(%{error: "Not found"})
+      end
+    end
+  end
+
+  # PUT /api/v1/buildings/:building_id/incidents/:id/link-doleance
+  def link_doleance(conn, %{"building_id" => building_id, "id" => id} = params) do
+    user = Guardian.Plug.current_resource(conn)
+    doleance_id = params["doleance_id"]
+
+    with :ok <- authorize_privileged(conn, building_id, user) do
+      incident = Incidents.get_incident!(id)
+
+      case Incidents.link_doleance(incident, doleance_id, user) do
+        {:ok, updated} ->
+          json(conn, %{data: incident_json(updated, true)})
+
+        {:error, :doleance_not_found} ->
+          conn |> put_status(:not_found) |> json(%{error: "Doléance introuvable."})
+
+        {:error, :building_mismatch} ->
+          conn
+          |> put_status(:unprocessable_entity)
+          |> json(%{error: "La doléance n'appartient pas à ce bâtiment."})
+
+        {:error, :forbidden} ->
+          conn
+          |> put_status(:forbidden)
+          |> json(%{error: "Action réservée au syndic / conseil syndical."})
+
+        {:error, %Ecto.Changeset{} = cs} ->
+          conn |> put_status(:unprocessable_entity) |> json(%{errors: format_errors(cs)})
+      end
+    end
+  end
+
+  # DELETE /api/v1/buildings/:building_id/incidents/:id/link-doleance
+  def unlink_doleance(conn, %{"building_id" => building_id, "id" => id}) do
+    user = Guardian.Plug.current_resource(conn)
+
+    with :ok <- authorize_privileged(conn, building_id, user) do
+      incident = Incidents.get_incident!(id)
+
+      case Incidents.unlink_doleance(incident, user) do
+        {:ok, updated} -> json(conn, %{data: incident_json(updated, true)})
+        {:error, :forbidden} ->
+          conn
+          |> put_status(:forbidden)
+          |> json(%{error: "Action réservée au syndic / conseil syndical."})
+
+        {:error, %Ecto.Changeset{} = cs} ->
+          conn |> put_status(:unprocessable_entity) |> json(%{errors: format_errors(cs)})
+      end
+    end
+  end
+
+  defp case_json(case_inc, privileged?) do
+    base = incident_json(case_inc, privileged?)
+
+    Map.merge(base, %{
+      metrics: case_inc.metrics,
+      last_follow_up_at: case_inc.last_follow_up_at,
+      last_action_at: case_inc.last_action_at,
+      follow_up_count: case_inc.follow_up_count,
+      linked_doleance_id: case_inc.linked_doleance_id,
+      last_event:
+        if case_inc.last_event do
+          event_json(case_inc.last_event)
+        else
+          nil
+        end
+    })
+  end
+
+  defp event_json(event) do
+    %{
+      id: event.id,
+      event_type: event.event_type,
+      payload: event.payload,
+      actor:
+        case event.actor do
+          %Ecto.Association.NotLoaded{} -> nil
+          nil -> nil
+          actor -> maybe_user(actor)
+        end,
+      inserted_at: event.inserted_at
+    }
+  end
+
   # ── Helpers ───────────────────────────────────────────────────────────────
 
   @privileged_roles [:super_admin, :syndic_manager, :syndic_staff, :president_cs, :membre_cs]

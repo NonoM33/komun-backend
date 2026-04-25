@@ -85,6 +85,20 @@ defmodule KomunBackendWeb.Router do
     get    "/buildings/:id/lots", BuildingController, :lots
 
     # Incidents
+    # Note: les routes "spéciales" (cases, follow-ups, events, link-doleance)
+    # sont déclarées AVANT le `resources` pour ne pas être interceptées
+    # par les routes génériques :show / :update qui matchent /:id.
+    get  "/buildings/:building_id/incidents/cases",
+                                                            IncidentController, :open_cases
+    post "/buildings/:building_id/incidents/:id/follow-ups",
+                                                            IncidentController, :add_follow_up
+    get  "/buildings/:building_id/incidents/:id/events",
+                                                            IncidentController, :events
+    put    "/buildings/:building_id/incidents/:id/link-doleance",
+                                                            IncidentController, :link_doleance
+    delete "/buildings/:building_id/incidents/:id/link-doleance",
+                                                            IncidentController, :unlink_doleance
+
     resources "/buildings/:building_id/incidents", IncidentController, except: [:new, :edit] do
       post "/comments", IncidentCommentController, :create
       post "/confirm-ai", IncidentController, :confirm_ai_answer
