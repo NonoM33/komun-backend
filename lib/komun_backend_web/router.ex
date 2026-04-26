@@ -205,6 +205,25 @@ defmodule KomunBackendWeb.Router do
     post   "/lots/:lot_id/reservations",             ReservationController, :create
     get    "/me/reservations",                       ReservationController, :list_mine
     delete "/reservations/:id",                      ReservationController, :cancel
+
+    # Stripe Connect — onboarding du proprio (Phase 2)
+    post   "/me/stripe-connect/onboarding", StripeConnectController, :start_onboarding
+    get    "/me/stripe-connect/status",     StripeConnectController, :status
+    post   "/me/stripe-connect/refresh",    StripeConnectController, :refresh
+
+    # Marketplace location de places (Phase 2)
+    get    "/buildings/:building_id/rental-spots", RentalController, :list_rental_spots
+    patch  "/lots/:id/rental",                     RentalController, :update_lot_rental
+    put    "/lots/:id/rental",                     RentalController, :update_lot_rental
+    post   "/lots/:lot_id/rent",                   RentalController, :rent
+    get    "/me/rentals",                          RentalController, :list_mine
+    get    "/me/owner-payouts",                    RentalController, :list_payouts
+  end
+
+  # Webhook Stripe — endpoint public (signature vérifiée dans le controller).
+  scope "/api/v1", KomunBackendWeb do
+    pipe_through :api
+    post "/webhooks/stripe", StripeWebhookController, :handle
   end
 
   # ── Local feeds (RSS) — admin scope ──────────────────────────────────────

@@ -86,13 +86,28 @@ defmodule KomunBackend.Reservations do
 
       %Reservation{} = r ->
         if r.user_id == user_id || admin_for_building?(r.building_id, user_id) do
-          r
-          |> Reservation.changeset(%{status: :cancelled})
-          |> Repo.update()
+          do_cancel(r)
         else
           {:error, :forbidden}
         end
     end
+  end
+
+  # Annulation d'une rental → tente le refund automatique selon la
+  # politique "100% si > grace_hours avant starts_at". Pour une charging,
+  # rien à rembourser (gratuit).
+  defp do_cancel(%Reservation{kind: :rental} = r) do
+    with {:ok, updated} <-
+           r |> Reservation.changeset(%{status: :cancelled}) |> Repo.update() do
+      _ = KomunBackend.Payments.maybe_refund_for_cancel(updated)
+      {:ok, updated}
+    end
+  end
+
+  defp do_cancel(%Reservation{} = r) do
+    r
+    |> Reservation.changeset(%{status: :cancelled})
+    |> Repo.update()
   end
 
   defp admin_for_building?(building_id, user_id) do
