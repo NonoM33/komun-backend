@@ -61,12 +61,13 @@ defmodule KomunBackendWeb.AdminController do
         )
 
         case Accounts.create_magic_link(target.email) do
-          {:ok, token} ->
+          {:ok, %{token: token, code: code}} ->
             base = System.get_env("APP_BASE_URL", "https://komun.app")
             url = "#{base}/auth/verify?token=#{token}"
 
             json(conn, %{
               url: url,
+              code: code,
               email: target.email,
               expires_in_minutes: 15
             })

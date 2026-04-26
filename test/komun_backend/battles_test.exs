@@ -111,6 +111,77 @@ defmodule KomunBackend.BattlesTest do
                })
     end
 
+    test "persiste external_url + attachment_url sur les options" do
+      {building, user} = setup_with_president()
+
+      {:ok, battle} =
+        Battles.create_battle(building.id, user.id, %{
+          "title" => "Choix d'un coussin",
+          "options" => [
+            %{
+              "label" => "Coussin gris",
+              "external_url" => "https://www.amazon.fr/dp/COUSSIN-GRIS",
+              "attachment_url" => "uploads/votes/1.jpg",
+              "attachment_filename" => "gris.jpg",
+              "attachment_mime_type" => "image/jpeg",
+              "attachment_size_bytes" => 12_345
+            },
+            %{"label" => "Coussin beige"}
+          ]
+        })
+
+      [vote] = battle.votes
+      [opt_gris, opt_beige] = Enum.sort_by(vote.options, & &1.position)
+
+      assert opt_gris.label == "Coussin gris"
+      assert opt_gris.external_url == "https://www.amazon.fr/dp/COUSSIN-GRIS"
+      assert opt_gris.attachment_url == "uploads/votes/1.jpg"
+      assert opt_gris.attachment_filename == "gris.jpg"
+      assert opt_gris.attachment_mime_type == "image/jpeg"
+      assert opt_gris.attachment_size_bytes == 12_345
+
+      # Une option sans extras reste valide.
+      assert opt_beige.external_url == nil
+      assert opt_beige.attachment_url == nil
+    end
+
+    test "rejette une external_url qui n'est pas HTTP(S) valide" do
+      {building, user} = setup_with_president()
+
+      assert {:error, %Ecto.Changeset{} = cs} =
+               Battles.create_battle(building.id, user.id, %{
+                 "title" => "Choix d'un coussin",
+                 "options" => [
+                   %{
+                     "label" => "Tentative XSS",
+                     "external_url" => "javascript:alert(1)"
+                   },
+                   %{"label" => "Honnête"}
+                 ]
+               })
+
+      # L'erreur remonte sur la sous-association options[i].external_url.
+      errors = Ecto.Changeset.traverse_errors(cs, fn {msg, _opts} -> msg end)
+      assert get_in(errors, [:options]) |> List.first() |> Map.get(:external_url) ==
+               ["doit être une URL HTTP(S) valide"]
+    end
+
+    test "accepte une external_url vide ou nil (champ optionnel)" do
+      {building, user} = setup_with_president()
+
+      assert {:ok, battle} =
+               Battles.create_battle(building.id, user.id, %{
+                 "title" => "Sujet",
+                 "options" => [
+                   %{"label" => "Un", "external_url" => ""},
+                   %{"label" => "Deux", "external_url" => nil}
+                 ]
+               })
+
+      [vote] = battle.votes
+      assert Enum.all?(vote.options, &is_nil(&1.external_url))
+    end
+
     test "applique les paramètres custom (round_duration, max_rounds, quorum)" do
       {building, user} = setup_with_president()
 

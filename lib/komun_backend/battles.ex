@@ -135,7 +135,8 @@ defmodule KomunBackend.Battles do
           "attachment_mime_type" =>
             Map.get(opt, "attachment_mime_type") || Map.get(opt, :attachment_mime_type),
           "attachment_size_bytes" =>
-            Map.get(opt, "attachment_size_bytes") || Map.get(opt, :attachment_size_bytes)
+            Map.get(opt, "attachment_size_bytes") || Map.get(opt, :attachment_size_bytes),
+          "external_url" => Map.get(opt, "external_url") || Map.get(opt, :external_url)
         }
       end)
 

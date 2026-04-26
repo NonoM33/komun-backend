@@ -17,9 +17,15 @@ config :komun_backend, KomunBackendWeb.Endpoint,
   live_view: [signing_salt: "RUnOIRMB"]
 
 # ── Guardian JWT ──────────────────────────────────────────────────────────────
+# 24h pour l'access token : suffisant pour qu'un mobile en réseau lent
+# (ou hors-ligne quelques heures) ne se fasse pas éjecter, et le frontend
+# tente de toute façon un refresh silencieux sur 401 via le refresh_token
+# (TTL 30j, posé à la connexion magic-link). En dessous d'1h on créait
+# un effet « réauth tous les matins » sur les iPhone ajoutés à l'écran
+# d'accueil.
 config :komun_backend, KomunBackend.Auth.Guardian,
   issuer: "komun",
-  ttl: {1, :hour},
+  ttl: {24, :hour},
   allowed_drift: 2000,
   secret_key: System.get_env("GUARDIAN_SECRET_KEY", "dev_secret_change_in_prod")
 

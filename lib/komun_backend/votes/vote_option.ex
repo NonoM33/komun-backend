@@ -15,6 +15,8 @@ defmodule KomunBackend.Votes.VoteOption do
     field :attachment_mime_type, :string
     field :attachment_size_bytes, :integer
 
+    field :external_url, :string
+
     belongs_to :vote, KomunBackend.Votes.Vote
     belongs_to :devis, KomunBackend.Projects.Devis
 
@@ -29,7 +31,8 @@ defmodule KomunBackend.Votes.VoteOption do
     :attachment_url,
     :attachment_filename,
     :attachment_mime_type,
-    :attachment_size_bytes
+    :attachment_size_bytes,
+    :external_url
   ]
 
   def changeset(option, attrs) do
@@ -37,5 +40,29 @@ defmodule KomunBackend.Votes.VoteOption do
     |> cast(attrs, @cast_fields)
     |> validate_required([:label])
     |> validate_length(:label, min: 1, max: 200)
+    |> validate_length(:external_url, max: 2048)
+    |> validate_external_url(:external_url)
+  end
+
+  # URL marchande (Amazon, Leroy Merlin, etc.) — strict HTTP/HTTPS, host
+  # obligatoire. Refuse `javascript:`, `data:`, `file:` et autres schémas
+  # potentiellement piégeux qu'un copropriétaire pourrait coller.
+  defp validate_external_url(changeset, field) do
+    validate_change(changeset, field, fn ^field, value ->
+      cond do
+        is_nil(value) or value == "" ->
+          []
+
+        true ->
+          case URI.parse(value) do
+            %URI{scheme: scheme, host: host}
+            when scheme in ["http", "https"] and is_binary(host) and host != "" ->
+              []
+
+            _ ->
+              [{field, "doit être une URL HTTP(S) valide"}]
+          end
+      end
+    end)
   end
 end

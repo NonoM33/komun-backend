@@ -26,6 +26,7 @@ defmodule KomunBackendWeb.Router do
 
     post "/auth/magic-link", AuthController, :request_magic_link
     get  "/auth/magic-link/verify", AuthController, :verify_magic_link
+    post "/auth/magic-code/verify", AuthController, :verify_magic_code
     post "/auth/refresh", AuthController, :refresh
     post "/auth/logout", AuthController, :logout
 
@@ -218,6 +219,14 @@ defmodule KomunBackendWeb.Router do
     post   "/lots/:lot_id/rent",                   RentalController, :rent
     get    "/me/rentals",                          RentalController, :list_mine
     get    "/me/owner-payouts",                    RentalController, :list_payouts
+
+    # Floor map — cartographie des logements pour notifications voisinage.
+    # Lecture : syndic + CS. Édition de l'adjacence : syndic + super_admin.
+    # Le gating fin est dans le controller (cf. @read_roles / @edit_roles).
+    get   "/buildings/:building_id/floor-map", FloorMapController, :show
+    patch "/lots/:id/adjacency",               FloorMapController, :update_adjacency
+    put   "/lots/:id/adjacency",               FloorMapController, :update_adjacency
+    get   "/lots/:id/notify-preview",          FloorMapController, :notify_preview
   end
 
   # Webhook Stripe — endpoint public (signature vérifiée dans le controller).
