@@ -41,9 +41,11 @@ defmodule KomunBackendWeb.AuthController do
       join_code: resolved_code
     ]
 
-    with {:ok, token} <- Accounts.create_magic_link(email, opts) do
-      # Queue email via Oban
-      %{email: email, token: token}
+    with {:ok, %{token: token, code: code}} <- Accounts.create_magic_link(email, opts) do
+      # Queue email via Oban — on transmet token (lien) et code (6 digits)
+      # pour que l'utilisateur puisse choisir : cliquer le lien (Safari)
+      # ou taper le code dans l'app standalone.
+      %{email: email, token: token, code: code}
       |> SendMagicLinkEmailJob.new()
       |> Oban.insert()
 
@@ -83,6 +85,44 @@ defmodule KomunBackendWeb.AuthController do
   end
 
   def verify_magic_link(conn, _), do: bad_request(conn, "token is required")
+
+  # POST /api/v1/auth/magic-code/verify
+  # Body: { "email": "...", "code": "123456" }
+  #
+  # Endpoint dédié à la PWA iOS standalone : un clic sur le lien magic
+  # ouvre Safari (jamais l'app standalone), donc les tokens posés sont
+  # dans le mauvais contexte. Avec ce flow, l'utilisateur reste dans
+  # la PWA, regarde le code dans son app Mail, le recopie, c'est joué.
+  def verify_magic_code(conn, %{"email" => email, "code" => code})
+      when is_binary(email) and is_binary(code) do
+    # Tolère les espaces et le formatage type "123 456" / "123-456".
+    cleaned = code |> String.replace(~r/[\s\-]/, "") |> String.trim()
+
+    case Accounts.consume_magic_code(email, cleaned) do
+      {:ok, %{user: user, joined_building: joined}} ->
+        {:ok, access_token, _claims} = Guardian.encode_and_sign(user, %{}, ttl: {24, :hour})
+
+        {:ok, refresh_token, _claims} =
+          Guardian.encode_and_sign(user, %{}, token_type: "refresh", ttl: {30, :day})
+
+        Accounts.record_sign_in(user)
+
+        json(conn, %{
+          access_token: access_token,
+          refresh_token: refresh_token,
+          user: user_json(user),
+          joined_building: building_json(joined)
+        })
+
+      {:error, :invalid_code} ->
+        conn |> put_status(401) |> json(%{error: "Code invalide ou expiré"})
+
+      {:error, :expired_code} ->
+        conn |> put_status(401) |> json(%{error: "Code expiré, redemandez-en un nouveau"})
+    end
+  end
+
+  def verify_magic_code(conn, _), do: bad_request(conn, "email and code are required")
 
   # POST /api/v1/auth/refresh
   def refresh(conn, %{"refresh_token" => refresh_token}) do
