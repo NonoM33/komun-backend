@@ -3,7 +3,7 @@ defmodule KomunBackendWeb.BattleController do
 
   alias KomunBackend.{Battles, Buildings}
   alias KomunBackend.Battles.Battle
-  alias KomunBackend.Votes.Vote
+  alias KomunBackend.Votes.{Uploads, Vote}
   alias KomunBackend.Auth.Guardian
 
   @privileged_roles [:super_admin, :syndic_manager, :syndic_staff, :president_cs, :membre_cs]
@@ -37,16 +37,20 @@ defmodule KomunBackendWeb.BattleController do
 
   # POST /api/v1/buildings/:building_id/battles
   #
-  # Body : { battle: { title, description?, options: [{label, …}, …],
-  #          round_duration_days?, max_rounds?, quorum_pct? } }
+  # Accepte du JSON (`{ battle: {...} }`) OU du multipart/form-data avec
+  # les champs `battle[...]` à plat et `options[i][file]` (Plug.Upload)
+  # quand une option transporte une photo. Mirroré sur VoteController
+  # pour réutiliser KomunBackend.Votes.Uploads.save/1.
   #
   # Création réservée aux rôles privilégiés (CS + syndic) : un
   # copropriétaire ne lance pas de battle, il ne fait qu'y participer.
-  def create(conn, %{"building_id" => building_id, "battle" => attrs}) do
+  def create(conn, %{"building_id" => building_id} = params) do
     user = Guardian.Plug.current_resource(conn)
 
     with :ok <- authorize_building(conn, building_id),
          :ok <- require_privileged(user) do
+      attrs = build_create_attrs(params)
+
       case Battles.create_battle(building_id, user.id, attrs) do
         {:ok, %Battle{} = battle} ->
           conn |> put_status(:created) |> json(%{data: battle_json(battle, user.id)})
@@ -133,6 +137,59 @@ defmodule KomunBackendWeb.BattleController do
           end
       end
     end
+  end
+
+  # ── Create attrs builder ─────────────────────────────────────────────────
+  #
+  # Deux formes acceptées :
+  #
+  #   * JSON : `%{"battle" => %{"title" => ..., "options" => [...]}}`. Les
+  #     options viennent déjà sérialisées (pas d'upload).
+  #
+  #   * Multipart : `%{"battle" => %{...}, "options" => [%{"label" => ...,
+  #     "file" => %Plug.Upload{}}]}`. On déplace les `file` vers le disque
+  #     via Uploads.save/1 puis on enrichit chaque option avec les
+  #     attachment_* renvoyés. Les options du multipart vivent au top-level
+  #     parce que les fichiers ne peuvent pas être imbriqués dans une chaîne
+  #     `battle[options][i][file]` côté Plug.Conn.
+  defp build_create_attrs(%{"battle" => battle_attrs} = params) when is_map(battle_attrs) do
+    case Map.get(params, "options") do
+      list when is_list(list) and list != [] ->
+        Map.put(battle_attrs, "options", save_option_uploads(list))
+
+      _ ->
+        battle_attrs
+    end
+  end
+
+  defp build_create_attrs(params) when is_map(params) do
+    params
+  end
+
+  defp save_option_uploads(options) do
+    Enum.map(options, fn opt ->
+      file = Map.get(opt, "file")
+      base = Map.drop(opt, ["file"])
+
+      case file do
+        %Plug.Upload{} = upload ->
+          case Uploads.save(upload) do
+            {:ok, meta} ->
+              Map.merge(base, %{
+                "attachment_url" => meta.file_url,
+                "attachment_filename" => meta.filename,
+                "attachment_mime_type" => meta.mime_type,
+                "attachment_size_bytes" => meta.file_size_bytes
+              })
+
+            _ ->
+              base
+          end
+
+        _ ->
+          base
+      end
+    end)
   end
 
   # ── Helpers ──────────────────────────────────────────────────────────────
@@ -225,7 +282,8 @@ defmodule KomunBackendWeb.BattleController do
       position: o.position,
       attachment_url: o.attachment_url,
       attachment_filename: o.attachment_filename,
-      attachment_mime_type: o.attachment_mime_type
+      attachment_mime_type: o.attachment_mime_type,
+      external_url: o.external_url
     }
   end
 
