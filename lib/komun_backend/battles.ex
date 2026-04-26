@@ -290,7 +290,12 @@ defmodule KomunBackend.Battles do
         %{
           option_id: opt.id,
           label: opt.label,
-          votes: Map.get(counts, opt.id, 0)
+          votes: Map.get(counts, opt.id, 0),
+          attachment_url: opt.attachment_url,
+          attachment_filename: opt.attachment_filename,
+          attachment_mime_type: opt.attachment_mime_type,
+          attachment_size_bytes: opt.attachment_size_bytes,
+          external_url: opt.external_url
         }
       end)
       |> Enum.sort_by(fn r -> {-r.votes, r.label} end)
@@ -336,7 +341,14 @@ defmodule KomunBackend.Battles do
 
         option_specs =
           Enum.map(qualifiers, fn q ->
-            %{"label" => q.label}
+            %{
+              "label" => q.label,
+              "attachment_url" => q[:attachment_url],
+              "attachment_filename" => q[:attachment_filename],
+              "attachment_mime_type" => q[:attachment_mime_type],
+              "attachment_size_bytes" => q[:attachment_size_bytes],
+              "external_url" => q[:external_url]
+            }
           end)
 
         with {:ok, _} <- open_round(battle, next_round, option_specs, battle.created_by_id),
@@ -350,8 +362,11 @@ defmodule KomunBackend.Battles do
   end
 
   # Top-2 + tous les ex-aequo au seuil. Si les 3 premiers ont 5 votes,
-  # 5 votes, 5 votes, on garde les 3 (et le finaliste peut aussi avoir
-  # 3 candidats au final).
+  # 5 votes, 5 votes, on garde les 3.
+  # Cas dégénéré : si la 2e place est à 0 vote, on ne qualifie QUE les
+  # options ayant au moins 1 vote (évite que tout le monde avance quand
+  # un seul candidat a recueilli des voix). Si personne n'a voté du tout,
+  # on garde top-2 pour ne pas bloquer le tournoi.
   defp qualifiers_for_runoff(tally) do
     case tally.ordered do
       [] ->
@@ -361,13 +376,19 @@ defmodule KomunBackend.Battles do
         tally.ordered
 
       [first, second | _rest] ->
-        # Seuil = score de la 2e place. On garde tout ce qui est ≥.
-        # Ça inclut automatiquement les ex-aequo de la 2e place sans
-        # casser le tri.
         threshold = second.votes
-        Enum.filter(tally.ordered, &(&1.votes >= threshold))
-        |> Enum.uniq_by(& &1.option_id)
-        |> case do
+
+        candidates =
+          if threshold > 0 do
+            tally.ordered
+            |> Enum.filter(&(&1.votes >= threshold))
+            |> Enum.uniq_by(& &1.option_id)
+          else
+            winners = Enum.filter(tally.ordered, &(&1.votes > 0))
+            if winners == [], do: [first, second], else: winners
+          end
+
+        case candidates do
           [] -> [first, second]
           list -> list
         end
