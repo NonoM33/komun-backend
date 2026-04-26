@@ -42,6 +42,14 @@ RUN chown nobody /app
 
 COPY --from=builder --chown=nobody:root /app/_build/prod/rel/komun_backend ./
 
+# Persistent uploads directory (mounted as a volume in production).
+# We symlink the release's priv/static/uploads to /app/uploads so that
+# `Application.app_dir(:komun_backend, "priv/static/uploads")` resolves
+# to the volume regardless of the release version path.
+RUN mkdir -p /app/uploads && \
+    sh -c 'cd /app/lib/komun_backend-* && rm -rf priv/static/uploads && ln -s /app/uploads priv/static/uploads' && \
+    chown -R nobody:root /app/uploads
+
 USER nobody
 
 ENV PHX_SERVER=true
