@@ -13,6 +13,7 @@ defmodule KomunBackend.Buildings.BuildingMember do
 
     belongs_to :building, KomunBackend.Buildings.Building
     belongs_to :user, KomunBackend.Accounts.User
+    belongs_to :primary_lot, KomunBackend.Buildings.Lot, foreign_key: :primary_lot_id
     has_many :lots, KomunBackend.Buildings.Lot, foreign_key: :owner_id, references: :user_id
 
     timestamps(type: :utc_datetime)
@@ -20,7 +21,7 @@ defmodule KomunBackend.Buildings.BuildingMember do
 
   def changeset(member, attrs) do
     member
-    |> cast(attrs, [:role, :joined_at, :is_active, :building_id, :user_id])
+    |> cast(attrs, [:role, :joined_at, :is_active, :building_id, :user_id, :primary_lot_id])
     |> validate_required([:role, :building_id, :user_id])
     |> unique_constraint([:building_id, :user_id])
   end
