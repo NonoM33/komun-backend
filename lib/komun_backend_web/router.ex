@@ -93,6 +93,15 @@ defmodule KomunBackendWeb.Router do
       put "/ai-answer", IncidentController, :update_ai_answer
     end
 
+    # Incident emails (correspondance) — paths flat, alignés sur le code
+    # Rails (`/api/v1/incidents/:id/emails*`) pour minimiser la friction
+    # frontend. Le building_id n'est pas dans l'URL : le controller le
+    # déduit de l'incident chargé pour vérifier l'appartenance au bâtiment.
+    get  "/incidents/:incident_id/emails",     IncidentEmailController, :index
+    post "/incidents/:incident_id/emails",     IncidentEmailController, :create
+    post "/incidents/:incident_id/emails/send", IncidentEmailController, :send_outbound
+    get  "/incidents/:incident_id/timeline",   IncidentEmailController, :timeline
+
     # Doléances (réclamations collectives : rampe de parking trop anguleuse,
     # défaut de construction, etc.)
     resources "/buildings/:building_id/doleances", DoleanceController, except: [:new, :edit] do
