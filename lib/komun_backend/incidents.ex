@@ -94,11 +94,33 @@ defmodule KomunBackend.Incidents do
         # Fire-and-forget AI triage. Groq fills ai_answer on the incident and
         # the resident polls for the update. Failure leaves the incident as-is.
         KomunBackend.AI.Triage.triage_incident_async(incident)
+
+        # Notifications ciblées de voisinage (water_leak → en dessous,
+        # noise → voisins de palier). Pas de notif si subtype absent.
+        maybe_notify_neighbors(incident)
       end
 
       {:ok, incident}
     end
   end
+
+  # Jobs Oban dédiés — on n'envoie pas de notif voisinage pour les incidents
+  # `:council_only` (déjà filtré en amont) ni quand le `subtype` est absent
+  # ou `:other`. Le `reporter` doit être lié à un BuildingMember avec un
+  # `primary_lot_id` ; sinon le job no-op silencieusement.
+  defp maybe_notify_neighbors(%Incident{subtype: :water_leak, id: id}) do
+    %{incident_id: id}
+    |> KomunBackend.Notifications.Jobs.NotifyUnitBelowJob.new()
+    |> Oban.insert()
+  end
+
+  defp maybe_notify_neighbors(%Incident{subtype: :noise, id: id}) do
+    %{incident_id: id}
+    |> KomunBackend.Notifications.Jobs.NotifySameFloorJob.new()
+    |> Oban.insert()
+  end
+
+  defp maybe_notify_neighbors(_), do: :ok
 
   # Notifie uniquement les membres privilégiés (syndic / conseil) du
   # bâtiment — utilisé quand un incident est `:council_only` pour ne pas
