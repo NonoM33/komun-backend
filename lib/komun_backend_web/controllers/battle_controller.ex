@@ -153,18 +153,40 @@ defmodule KomunBackendWeb.BattleController do
   #     parce que les fichiers ne peuvent pas être imbriqués dans une chaîne
   #     `battle[options][i][file]` côté Plug.Conn.
   defp build_create_attrs(%{"battle" => battle_attrs} = params) when is_map(battle_attrs) do
-    case Map.get(params, "options") do
-      list when is_list(list) and list != [] ->
-        Map.put(battle_attrs, "options", save_option_uploads(list))
-
-      _ ->
-        battle_attrs
+    case normalize_options_param(Map.get(params, "options")) do
+      [] -> battle_attrs
+      list -> Map.put(battle_attrs, "options", save_option_uploads(list))
     end
   end
 
   defp build_create_attrs(params) when is_map(params) do
     params
   end
+
+  # Plug parse `options[0][label]=...&options[1][label]=...` comme une
+  # map indexée par strings (`%{"0" => %{...}, "1" => %{...}}`), pas
+  # comme une liste — l'ancien `is_list/1` laissait donc tomber tout le
+  # multipart et la création repartait sans options ⇒ "Une battle exige
+  # au moins 2 options" alors que l'utilisateur en avait posté 3.
+  defp normalize_options_param(list) when is_list(list), do: list
+
+  defp normalize_options_param(map) when is_map(map) do
+    map
+    |> Enum.sort_by(fn {k, _v} -> parse_option_index(k) end)
+    |> Enum.map(fn {_k, v} -> v end)
+  end
+
+  defp normalize_options_param(_), do: []
+
+  defp parse_option_index(k) when is_binary(k) do
+    case Integer.parse(k) do
+      {n, ""} -> n
+      _ -> :infinity
+    end
+  end
+
+  defp parse_option_index(k) when is_integer(k), do: k
+  defp parse_option_index(_), do: :infinity
 
   defp save_option_uploads(options) do
     Enum.map(options, fn opt ->
