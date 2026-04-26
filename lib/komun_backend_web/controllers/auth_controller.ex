@@ -62,7 +62,7 @@ defmodule KomunBackendWeb.AuthController do
   def verify_magic_link(conn, %{"token" => token}) do
     case Accounts.consume_magic_link(token) do
       {:ok, %{user: user, joined_building: joined}} ->
-        {:ok, access_token, _claims} = Guardian.encode_and_sign(user, %{}, ttl: {1, :hour})
+        {:ok, access_token, _claims} = Guardian.encode_and_sign(user, %{}, ttl: {24, :hour})
         {:ok, refresh_token, _claims} = Guardian.encode_and_sign(user, %{}, token_type: "refresh", ttl: {30, :day})
 
         Accounts.record_sign_in(user)
@@ -108,7 +108,7 @@ defmodule KomunBackendWeb.AuthController do
     end
 
     with {:ok, user} <- Accounts.get_or_create_user(email) do
-      {:ok, access_token, _} = Guardian.encode_and_sign(user, %{}, ttl: {1, :hour})
+      {:ok, access_token, _} = Guardian.encode_and_sign(user, %{}, ttl: {24, :hour})
       {:ok, refresh_token, _} = Guardian.encode_and_sign(user, %{}, token_type: "refresh", ttl: {30, :day})
       Accounts.record_sign_in(user)
       json(conn, %{
