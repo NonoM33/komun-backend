@@ -52,6 +52,7 @@ defmodule KomunBackend.Doleances.Doleance do
     belongs_to :building, KomunBackend.Buildings.Building
     belongs_to :author, KomunBackend.Accounts.User, foreign_key: :author_id
     has_many :supports, KomunBackend.Doleances.DoleanceSupport
+    has_many :events, KomunBackend.Doleances.DoleanceEvent, preload_order: [asc: :inserted_at]
 
     timestamps(type: :utc_datetime)
   end

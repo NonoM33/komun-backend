@@ -101,6 +101,7 @@ defmodule KomunBackendWeb.Router do
       post   "/generate-letter",  DoleanceController, :generate_letter
       post   "/suggest-experts",  DoleanceController, :suggest_experts
       post   "/escalate",         DoleanceController, :escalate
+      get    "/events",           DoleanceController, :events
     end
 
     # Diligences (procédure encadrée pour troubles anormaux du voisinage,
