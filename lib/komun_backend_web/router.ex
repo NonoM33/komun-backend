@@ -197,6 +197,14 @@ defmodule KomunBackendWeb.Router do
     # Local feeds (RSS) — read scope (any active member of the residence)
     get "/residences/:residence_id/rss-feeds", RssFeedController, :index
     get "/residences/:residence_id/rss-feeds/items", RssFeedController, :items
+
+    # Floor map — cartographie des logements pour notifications voisinage.
+    # Lecture : syndic + CS. Édition de l'adjacence : syndic + super_admin.
+    # Le gating fin est dans le controller (cf. @read_roles / @edit_roles).
+    get   "/buildings/:building_id/floor-map", FloorMapController, :show
+    patch "/lots/:id/adjacency",               FloorMapController, :update_adjacency
+    put   "/lots/:id/adjacency",               FloorMapController, :update_adjacency
+    get   "/lots/:id/notify-preview",          FloorMapController, :notify_preview
   end
 
   # ── Local feeds (RSS) — admin scope ──────────────────────────────────────
