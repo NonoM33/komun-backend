@@ -61,25 +61,25 @@ defmodule KomunBackend.AI.DoleanceDossier do
 
   # ── Public API ───────────────────────────────────────────────────────────
 
-  def generate_letter(%Doleance{} = doleance) do
+  def generate_letter(%Doleance{} = doleance, actor_id \\ nil) do
     if System.get_env("GROQ_API_KEY") in [nil, ""] do
       {:error, :no_ai_key}
     else
-      do_generate_letter(doleance)
+      do_generate_letter(doleance, actor_id)
     end
   end
 
-  def suggest_experts(%Doleance{} = doleance) do
+  def suggest_experts(%Doleance{} = doleance, actor_id \\ nil) do
     if System.get_env("GROQ_API_KEY") in [nil, ""] do
       {:error, :no_ai_key}
     else
-      do_suggest_experts(doleance)
+      do_suggest_experts(doleance, actor_id)
     end
   end
 
   # ── Internals ────────────────────────────────────────────────────────────
 
-  defp do_generate_letter(doleance) do
+  defp do_generate_letter(doleance, actor_id) do
     context = Documents.context_for_ai(doleance.building_id, :coproprietaire)
     support_count = length(doleance.supports || [])
 
@@ -110,7 +110,7 @@ defmodule KomunBackend.AI.DoleanceDossier do
 
     case AI.Groq.complete(messages, max_tokens: 1400) do
       {:ok, %{content: letter, model: model}} ->
-        case Doleances.save_ai_letter(doleance, letter, model) do
+        case Doleances.save_ai_letter(doleance, letter, model, actor_id) do
           {:ok, updated} -> {:ok, updated}
           error -> error
         end
@@ -124,7 +124,7 @@ defmodule KomunBackend.AI.DoleanceDossier do
     end
   end
 
-  defp do_suggest_experts(doleance) do
+  defp do_suggest_experts(doleance, actor_id) do
     user_prompt = """
     Doléance :
     - Titre : #{doleance.title}
@@ -141,7 +141,7 @@ defmodule KomunBackend.AI.DoleanceDossier do
 
     case AI.Groq.complete(messages, max_tokens: 500) do
       {:ok, %{content: suggestions, model: model}} ->
-        case Doleances.save_ai_suggestions(doleance, suggestions, model) do
+        case Doleances.save_ai_suggestions(doleance, suggestions, model, actor_id) do
           {:ok, updated} -> {:ok, updated}
           error -> error
         end
