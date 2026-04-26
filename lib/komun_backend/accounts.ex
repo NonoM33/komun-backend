@@ -137,6 +137,8 @@ defmodule KomunBackend.Accounts do
   def create_magic_link(email, opts \\ []) when is_binary(email) do
     token = MagicLink.generate_token()
     token_hash = MagicLink.hash_token(token)
+    code = MagicLink.generate_code()
+    code_hash = MagicLink.hash_code(code)
     normalized_email = String.downcase(email)
 
     # Invalide tous les liens précédents encore actifs pour ce mail. Le
@@ -155,6 +157,7 @@ defmodule KomunBackend.Accounts do
     attrs = %{
       email: normalized_email,
       token_hash: token_hash,
+      code_hash: code_hash,
       expires_at: MagicLink.expires_at(),
       first_name: trim_or_nil(Keyword.get(opts, :first_name)),
       last_name: trim_or_nil(Keyword.get(opts, :last_name)),
@@ -162,7 +165,10 @@ defmodule KomunBackend.Accounts do
     }
 
     with {:ok, _} <- %MagicLink{} |> MagicLink.changeset(attrs) |> Repo.insert() do
-      {:ok, token}
+      # On rend AUSSI le code en clair, à charge de l'appelant de
+      # l'embarquer dans le mail. Comme pour le token, on n'en garde
+      # que l'empreinte SHA-256 en base.
+      {:ok, %{token: token, code: code}}
     end
   end
 
@@ -217,6 +223,83 @@ defmodule KomunBackend.Accounts do
           end
       end
     end)
+  end
+
+  @doc """
+  Variante de `consume_magic_link/1` pour le code à 6 chiffres tapé
+  dans l'app — usage iOS PWA standalone, où un clic dans Mail
+  ouvrirait Safari et romprait la session de la PWA.
+
+  Lookup par (email, code_hash) plutôt que par token seul, parce que
+  6 digits ne sont pas globalement uniques. La normalisation email
+  bas-de-casse + le `is_nil(used_at)` garantissent une seule ligne.
+
+  En cas de mauvais code on incrémente `attempts_count` ; passé
+  `max_code_attempts` (5), on invalide le lien (`used_at = now`)
+  pour fermer toute fenêtre de brute-force.
+  """
+  def consume_magic_code(email, code) when is_binary(email) and is_binary(code) do
+    normalized_email = String.downcase(email)
+    code_hash = MagicLink.hash_code(code)
+
+    magic_link =
+      from(ml in MagicLink,
+        where: ml.email == ^normalized_email and is_nil(ml.used_at)
+      )
+      |> Repo.one()
+
+    cond do
+      is_nil(magic_link) ->
+        {:error, :invalid_code}
+
+      not MagicLink.valid?(magic_link) ->
+        {:error, :expired_code}
+
+      magic_link.code_hash != code_hash ->
+        # IMPORTANT : on incrémente HORS transaction, sinon le rollback
+        # qui suit annulerait l'incrément et le brute-force ne serait
+        # plus borné.
+        register_failed_attempt(magic_link)
+        {:error, :invalid_code}
+
+      true ->
+        Repo.transaction(fn ->
+          magic_link
+          |> Ecto.Changeset.change(used_at: DateTime.utc_now() |> DateTime.truncate(:second))
+          |> Repo.update!()
+
+          case get_or_create_user(magic_link.email) do
+            {:ok, user} ->
+              user = apply_signup_profile(user, magic_link)
+              joined = maybe_auto_join(user, magic_link)
+              %{user: user, joined_building: joined}
+
+            {:error, changeset} ->
+              Repo.rollback(changeset)
+          end
+        end)
+    end
+  end
+
+  defp register_failed_attempt(%MagicLink{} = ml) do
+    next_count = (ml.attempts_count || 0) + 1
+    max = MagicLink.max_code_attempts()
+
+    if next_count >= max do
+      # Au-delà du seuil, on grille définitivement le lien — l'user
+      # devra en redemander un nouveau. Plus prudent que d'attendre la
+      # fin de la fenêtre TTL.
+      ml
+      |> Ecto.Changeset.change(
+        attempts_count: next_count,
+        used_at: DateTime.utc_now() |> DateTime.truncate(:second)
+      )
+      |> Repo.update!()
+    else
+      ml
+      |> Ecto.Changeset.change(attempts_count: next_count)
+      |> Repo.update!()
+    end
   end
 
   # Fills in first_name / last_name if the magic link carried them *and*

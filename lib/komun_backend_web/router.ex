@@ -26,6 +26,7 @@ defmodule KomunBackendWeb.Router do
 
     post "/auth/magic-link", AuthController, :request_magic_link
     get  "/auth/magic-link/verify", AuthController, :verify_magic_link
+    post "/auth/magic-code/verify", AuthController, :verify_magic_code
     post "/auth/refresh", AuthController, :refresh
     post "/auth/logout", AuthController, :logout
 

@@ -82,7 +82,7 @@ defmodule KomunBackendWeb.AuthMagicLinkSignupTest do
          %{conn: conn} do
       building = insert_building!("MAGICJN1")
 
-      {:ok, token} =
+      {:ok, %{token: token}} =
         Accounts.create_magic_link("joiner@example.com",
           first_name: "Jean",
           last_name: "Dupont",
@@ -106,7 +106,7 @@ defmodule KomunBackendWeb.AuthMagicLinkSignupTest do
     end
 
     test "returns joined_building: null when the link has no join_code", %{conn: conn} do
-      {:ok, token} = Accounts.create_magic_link("plain@example.com")
+      {:ok, %{token: token}} = Accounts.create_magic_link("plain@example.com")
 
       body =
         conn
@@ -118,7 +118,7 @@ defmodule KomunBackendWeb.AuthMagicLinkSignupTest do
 
     test "returns joined_building: null when join_code doesn't match any building",
          %{conn: conn} do
-      {:ok, token} = Accounts.create_magic_link("badcode@example.com", join_code: "NOMATCH9")
+      {:ok, %{token: token}} = Accounts.create_magic_link("badcode@example.com", join_code: "NOMATCH9")
 
       body =
         conn
@@ -132,6 +132,73 @@ defmodule KomunBackendWeb.AuthMagicLinkSignupTest do
     test "401s on invalid token", %{conn: conn} do
       conn = get(conn, ~p"/api/v1/auth/magic-link/verify?token=not-a-real-token")
       assert json_response(conn, 401)["error"] =~ "Invalid"
+    end
+  end
+
+  describe "POST /api/v1/auth/magic-code/verify" do
+    test "valid email + code returns access_token, refresh_token, user", %{conn: conn} do
+      {:ok, %{code: code}} = Accounts.create_magic_link("ios@example.com")
+
+      body =
+        conn
+        |> post(~p"/api/v1/auth/magic-code/verify", %{"email" => "ios@example.com", "code" => code})
+        |> json_response(200)
+
+      assert body["access_token"]
+      assert body["refresh_token"]
+      assert body["user"]["email"] == "ios@example.com"
+    end
+
+    test "tolerates spaces and dashes in the code (iOS auto-formatting)", %{conn: conn} do
+      {:ok, %{code: code}} = Accounts.create_magic_link("space@example.com")
+      pretty = String.slice(code, 0, 3) <> " " <> String.slice(code, 3, 3)
+
+      body =
+        conn
+        |> post(~p"/api/v1/auth/magic-code/verify", %{
+          "email" => "space@example.com",
+          "code" => pretty
+        })
+        |> json_response(200)
+
+      assert body["user"]["email"] == "space@example.com"
+    end
+
+    test "wrong code → 401 + error message", %{conn: conn} do
+      {:ok, _} = Accounts.create_magic_link("bad@example.com")
+
+      conn =
+        post(conn, ~p"/api/v1/auth/magic-code/verify", %{
+          "email" => "bad@example.com",
+          "code" => "000000"
+        })
+
+      assert json_response(conn, 401)["error"] =~ "invalide"
+    end
+
+    test "5 wrong attempts grills the link (anti brute-force)", %{conn: conn} do
+      {:ok, %{code: real}} = Accounts.create_magic_link("brute@example.com")
+
+      # 5 mauvais essais
+      for _ <- 1..5 do
+        post(conn, ~p"/api/v1/auth/magic-code/verify", %{
+          "email" => "brute@example.com",
+          "code" => "000000"
+        })
+      end
+
+      # Le bon code lui-même ne marche plus.
+      conn2 =
+        post(conn, ~p"/api/v1/auth/magic-code/verify", %{
+          "email" => "brute@example.com",
+          "code" => real
+        })
+
+      assert json_response(conn2, 401)["error"]
+    end
+
+    test "missing email or code → 400", %{conn: conn} do
+      assert json_response(post(conn, ~p"/api/v1/auth/magic-code/verify", %{}), 400)
     end
   end
 end
