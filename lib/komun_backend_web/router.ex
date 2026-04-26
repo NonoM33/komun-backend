@@ -197,6 +197,14 @@ defmodule KomunBackendWeb.Router do
     # Local feeds (RSS) — read scope (any active member of the residence)
     get "/residences/:residence_id/rss-feeds", RssFeedController, :index
     get "/residences/:residence_id/rss-feeds/items", RssFeedController, :items
+
+    # Réservations (V1 = places de recharge gratuites). Création réservée
+    # aux membres actifs du bâtiment (vérifié dans le controller).
+    get    "/buildings/:building_id/charging-spots", ReservationController, :list_charging_spots
+    get    "/lots/:lot_id/reservations",             ReservationController, :list_for_lot
+    post   "/lots/:lot_id/reservations",             ReservationController, :create
+    get    "/me/reservations",                       ReservationController, :list_mine
+    delete "/reservations/:id",                      ReservationController, :cancel
   end
 
   # ── Local feeds (RSS) — admin scope ──────────────────────────────────────

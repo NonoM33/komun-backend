@@ -13,6 +13,10 @@ defmodule KomunBackend.Buildings.Lot do
     field :tantieme, :decimal
     field :is_occupied, :boolean, default: false
 
+    # Place de recharge VE commune — flaggée par le syndic, réservable
+    # par tous les membres du bâtiment via la feature parking V1.
+    field :is_charging_spot, :boolean, default: false
+
     belongs_to :building, KomunBackend.Buildings.Building
     belongs_to :owner, KomunBackend.Accounts.User, foreign_key: :owner_id
     belongs_to :tenant, KomunBackend.Accounts.User, foreign_key: :tenant_id
@@ -23,6 +27,7 @@ defmodule KomunBackend.Buildings.Lot do
   def changeset(lot, attrs) do
     lot
     |> cast(attrs, [:number, :type, :floor, :area_sqm, :tantieme, :is_occupied,
+                    :is_charging_spot,
                     :building_id, :owner_id, :tenant_id])
     |> validate_required([:number, :type, :building_id])
   end
