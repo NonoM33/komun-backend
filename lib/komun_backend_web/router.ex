@@ -199,6 +199,27 @@ defmodule KomunBackendWeb.Router do
     get "/residences/:residence_id/rss-feeds", RssFeedController, :index
     get "/residences/:residence_id/rss-feeds/items", RssFeedController, :items
 
+    # Réservations (V1 = places de recharge gratuites). Création réservée
+    # aux membres actifs du bâtiment (vérifié dans le controller).
+    get    "/buildings/:building_id/charging-spots", ReservationController, :list_charging_spots
+    get    "/lots/:lot_id/reservations",             ReservationController, :list_for_lot
+    post   "/lots/:lot_id/reservations",             ReservationController, :create
+    get    "/me/reservations",                       ReservationController, :list_mine
+    delete "/reservations/:id",                      ReservationController, :cancel
+
+    # Stripe Connect — onboarding du proprio (Phase 2)
+    post   "/me/stripe-connect/onboarding", StripeConnectController, :start_onboarding
+    get    "/me/stripe-connect/status",     StripeConnectController, :status
+    post   "/me/stripe-connect/refresh",    StripeConnectController, :refresh
+
+    # Marketplace location de places (Phase 2)
+    get    "/buildings/:building_id/rental-spots", RentalController, :list_rental_spots
+    patch  "/lots/:id/rental",                     RentalController, :update_lot_rental
+    put    "/lots/:id/rental",                     RentalController, :update_lot_rental
+    post   "/lots/:lot_id/rent",                   RentalController, :rent
+    get    "/me/rentals",                          RentalController, :list_mine
+    get    "/me/owner-payouts",                    RentalController, :list_payouts
+
     # Floor map — cartographie des logements pour notifications voisinage.
     # Lecture : syndic + CS. Édition de l'adjacence : syndic + super_admin.
     # Le gating fin est dans le controller (cf. @read_roles / @edit_roles).
@@ -206,6 +227,12 @@ defmodule KomunBackendWeb.Router do
     patch "/lots/:id/adjacency",               FloorMapController, :update_adjacency
     put   "/lots/:id/adjacency",               FloorMapController, :update_adjacency
     get   "/lots/:id/notify-preview",          FloorMapController, :notify_preview
+  end
+
+  # Webhook Stripe — endpoint public (signature vérifiée dans le controller).
+  scope "/api/v1", KomunBackendWeb do
+    pipe_through :api
+    post "/webhooks/stripe", StripeWebhookController, :handle
   end
 
   # ── Local feeds (RSS) — admin scope ──────────────────────────────────────

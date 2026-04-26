@@ -27,6 +27,10 @@ config :komun_backend, :skip_battle_scheduling, true
 
 config :komun_backend, KomunBackend.Mailer, adapter: Swoosh.Adapters.Test
 
+# Stripe : adapter mock in-memory en tests, pas d'appel réseau ni besoin
+# de STRIPE_SECRET_KEY pour faire passer la CI.
+config :komun_backend, :stripe_api_module, KomunBackend.StripeApi.Mock
+
 config :swoosh, :api_client, false
 
 config :logger, level: :warning

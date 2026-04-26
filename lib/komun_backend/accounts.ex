@@ -17,6 +17,13 @@ defmodule KomunBackend.Accounts do
     Repo.get_by(User, email: String.downcase(email))
   end
 
+  @doc "Lookup user via leur compte Stripe Connect (utilisé par les webhooks)."
+  def get_user_by_stripe_account(account_id) when is_binary(account_id) do
+    Repo.get_by(User, stripe_connect_account_id: account_id)
+  end
+
+  def get_user_by_stripe_account(_), do: nil
+
   def get_or_create_user(email) do
     email = String.downcase(email)
     case Repo.get_by(User, email: email) do
