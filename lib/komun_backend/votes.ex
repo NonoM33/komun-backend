@@ -5,6 +5,7 @@ defmodule KomunBackend.Votes do
   alias KomunBackend.Repo
   alias KomunBackend.Votes.{Vote, VoteResponse, VoteOption}
   alias KomunBackend.Projects.Project
+  alias KomunBackendWeb.VotesChannel
 
   def list_votes(building_id) do
     from(v in Vote,
@@ -40,18 +41,25 @@ defmodule KomunBackend.Votes do
       |> Map.put("building_id", building_id)
       |> Map.put("created_by_id", user_id)
 
-    Repo.transaction(fn ->
-      changeset = Vote.changeset(%Vote{}, attrs)
+    result =
+      Repo.transaction(fn ->
+        changeset = Vote.changeset(%Vote{}, attrs)
 
-      case Repo.insert(changeset) do
-        {:ok, vote} ->
-          maybe_link_project(vote)
-          get_vote!(vote.id)
+        case Repo.insert(changeset) do
+          {:ok, vote} ->
+            maybe_link_project(vote)
+            get_vote!(vote.id)
 
-        {:error, cs} ->
-          Repo.rollback(cs)
-      end
-    end)
+          {:error, cs} ->
+            Repo.rollback(cs)
+        end
+      end)
+
+    with {:ok, vote} <- result do
+      VotesChannel.broadcast_vote_created(vote.building_id, build_broadcast_payload(vote))
+    end
+
+    result
   end
 
   # When the new vote points at a project, set `projects.vote_id` so the
@@ -72,9 +80,17 @@ defmodule KomunBackend.Votes do
   end
 
   def close_vote(vote) do
-    vote
-    |> Ecto.Changeset.change(status: :closed)
-    |> Repo.update()
+    result =
+      vote
+      |> Ecto.Changeset.change(status: :closed)
+      |> Repo.update()
+
+    with {:ok, closed} <- result do
+      reloaded = get_vote!(closed.id)
+      VotesChannel.broadcast_vote_updated(reloaded.building_id, build_broadcast_payload(reloaded))
+    end
+
+    result
   end
 
   @doc """
@@ -139,17 +155,39 @@ defmodule KomunBackend.Votes do
   defp upsert_response(vote_id, user_id, attrs) do
     base = Map.merge(attrs, %{vote_id: vote_id, user_id: user_id})
 
-    case Repo.get_by(VoteResponse, vote_id: vote_id, user_id: user_id) do
-      nil ->
-        %VoteResponse{}
-        |> VoteResponse.changeset(base)
-        |> Repo.insert()
+    result =
+      case Repo.get_by(VoteResponse, vote_id: vote_id, user_id: user_id) do
+        nil ->
+          %VoteResponse{}
+          |> VoteResponse.changeset(base)
+          |> Repo.insert()
 
-      existing ->
-        existing
-        |> VoteResponse.changeset(Map.put(base, :choice, Map.get(base, :choice)))
-        |> Repo.update()
+        existing ->
+          existing
+          |> VoteResponse.changeset(Map.put(base, :choice, Map.get(base, :choice)))
+          |> Repo.update()
+      end
+
+    with {:ok, _resp} <- result do
+      vote = get_vote!(vote_id)
+      VotesChannel.broadcast_vote_updated(vote.building_id, build_broadcast_payload(vote))
     end
+
+    result
+  end
+
+  # Building-scoped payload — never includes user-specific fields
+  # (`user_id`, `responses`, `my_choice`, `has_voted`). Per-user state lives
+  # in the REST `GET /votes` response, which the frontend re-fetches on each
+  # broadcast via React-Query invalidation.
+  defp build_broadcast_payload(%Vote{} = vote) do
+    %{
+      vote_id: vote.id,
+      tally: tally(vote),
+      option_counts: option_tally(vote),
+      status: vote.status,
+      updated_at: DateTime.utc_now()
+    }
   end
 
   def has_voted?(vote_id, user_id) do

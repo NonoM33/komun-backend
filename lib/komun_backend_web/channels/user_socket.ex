@@ -5,6 +5,7 @@ defmodule KomunBackendWeb.UserSocket do
   channel "building:*", KomunBackendWeb.BuildingChannel
   channel "user:*", KomunBackendWeb.UserChannel
   channel "room:*", KomunBackendWeb.ChatRoomChannel
+  channel "votes:building:*", KomunBackendWeb.VotesChannel
 
   @impl true
   def connect(%{"token" => token}, socket, _connect_info) do
