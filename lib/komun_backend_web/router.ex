@@ -171,6 +171,28 @@ defmodule KomunBackendWeb.Router do
     resources "/buildings/:building_id/documents", DocumentController,
       except: [:new, :edit]
 
+    # Articles éditoriaux (Notion-like, workflow brouillon → relecture → publié).
+    # Création / édition réservées au CS + syndic ; lecture des `:published`
+    # ouverte à tout membre du bâtiment.
+    post "/buildings/:building_id/articles/:id/transition",
+         ArticleController, :transition
+    resources "/buildings/:building_id/articles", ArticleController,
+      except: [:new, :edit]
+
+    # Written documents (PV de conseil rédigés en ligne, etc.). Mêmes règles
+    # d'accès que les articles. Archive / unarchive via routes dédiées,
+    # comme pour les `documents` téléversés, pour ne pas confondre avec
+    # un soft-delete via DELETE.
+    post   "/buildings/:building_id/written_documents/:id/transition",
+           WrittenDocumentController, :transition
+    post   "/buildings/:building_id/written_documents/:id/archive",
+           WrittenDocumentController, :archive
+    delete "/buildings/:building_id/written_documents/:id/archive",
+           WrittenDocumentController, :unarchive
+    resources "/buildings/:building_id/written_documents",
+      WrittenDocumentController,
+      except: [:new, :edit]
+
     # Channels (threads per residence)
     resources "/buildings/:building_id/channels", ChannelController,
       except: [:new, :edit, :show]
