@@ -2,18 +2,18 @@ defmodule KomunBackendWeb.IngestionController do
   @moduledoc """
   Endpoint d'ingestion intelligente pour l'admin.
 
-  L'admin Komun (privileged role : super_admin / syndic / conseil
-  syndical) uploade un batch de fichiers (`.eml`, PDF, images). Pour
-  chaque fichier on fabrique un email normalisé, puis on le passe au
-  router AI (`KomunBackend.AI.IncidentRouter`) qui décide :
+  POST /api/v1/buildings/:building_id/ingestions/files
+  Body : multipart `files[]` (ou `files`).
 
-    * `:append` → on ajoute un commentaire 📧 à un incident ouvert
-      existant (le summarizer regenerera le résumé après).
-    * `:create` → on crée un nouvel incident minimal + 1er commentaire
-      (le summarizer regenerera titre + description + micro_summary).
+  Pour chaque fichier :
 
-  La réponse renvoie un tableau `ingested` détaillant ce qui a été fait
-  pour chaque fichier (action + incident_id, ou erreur).
+    * `.eml`              → parse → email → route_email
+    * `.pdf` / image      → save_upload + email synthétique → route_email
+    * autre               → status: "unsupported" (skip non bloquant)
+
+  Côté AI, c'est `IncidentRouter.route` qui décide append vs create,
+  puis `IncidentSummarizer.regenerate(:all)` regenère titre + description
+  + micro_summary (déclenché en aval par `Incidents.add_comment`).
   """
 
   use KomunBackendWeb, :controller
@@ -25,36 +25,38 @@ defmodule KomunBackendWeb.IngestionController do
   alias KomunBackend.Auth.Guardian
 
   @privileged_roles [:super_admin, :syndic_manager, :syndic_staff, :president_cs, :membre_cs]
-
   @eml_exts ~w(.eml)
   @pdf_exts ~w(.pdf)
   @image_exts ~w(.jpg .jpeg .png .gif .webp .heic)
 
-  # POST /api/v1/buildings/:building_id/ingestions/files
   def create(conn, %{"building_id" => building_id} = params) do
     user = Guardian.Plug.current_resource(conn)
 
-    with :ok <- authorize_privileged(conn, building_id, user),
-         {:ok, author} <- InboundEmails.system_author(),
-         files when is_list(files) and files != [] <- collect_files(params) do
-      results = Enum.map(files, &ingest_one(building_id, author.id, &1))
-
-      json(conn, %{ingested: results})
-    else
-      [] ->
+    cond do
+      not privileged?(user, building_id) ->
         conn
-        |> put_status(:unprocessable_entity)
-        |> json(%{error: "Au moins un fichier requis"})
+        |> put_status(:forbidden)
+        |> json(%{error: "Réservé au syndic et au conseil syndical"})
 
-      {:error, :no_system_user} ->
-        conn
-        |> put_status(:internal_server_error)
-        |> json(%{error: "Aucun utilisateur système configuré"})
+      true ->
+        case InboundEmails.system_author() do
+          {:error, :no_system_user} ->
+            conn
+            |> put_status(:internal_server_error)
+            |> json(%{error: "Aucun utilisateur système configuré"})
 
-      _other ->
-        # `authorize_privileged` halts the conn already on forbidden ;
-        # this branch handles `nil` (files key missing).
-        if conn.halted, do: conn, else: conn |> put_status(:unprocessable_entity) |> json(%{error: "Format invalide"})
+          {:ok, author} ->
+            files = collect_files(params)
+
+            if files == [] do
+              conn
+              |> put_status(:unprocessable_entity)
+              |> json(%{error: "Au moins un fichier requis"})
+            else
+              results = Enum.map(files, &ingest_one(building_id, author.id, &1))
+              json(conn, %{ingested: results})
+            end
+        end
     end
   end
 
@@ -69,14 +71,14 @@ defmodule KomunBackendWeb.IngestionController do
         ingest_eml(building_id, author_id, upload)
 
       ext in @pdf_exts or ext in @image_exts ->
-        ingest_document(building_id, author_id, upload, ext)
+        ingest_document(building_id, author_id, upload)
 
       true ->
-        %{filename: filename, status: "unsupported", error: "Format non géré : #{ext}"}
+        %{filename: filename, status: "unsupported", error: "Format non géré : " <> ext}
     end
   rescue
     e ->
-      Logger.error("[ingestion] #{inspect(e)} on #{upload.filename}")
+      Logger.error("[ingestion] " <> inspect(e) <> " on " <> upload.filename)
       %{filename: upload.filename, status: "error", error: Exception.message(e)}
   end
 
@@ -84,39 +86,36 @@ defmodule KomunBackendWeb.IngestionController do
     raw = File.read!(path)
     email = EmlParser.parse(raw)
 
-    cond do
-      is_nil(email.from) or email.from == "" ->
-        %{filename: filename, status: "error", error: "Email illisible (champ `from` introuvable)"}
-
-      true ->
-        do_route(filename, building_id, author_id, email)
+    if is_nil(email.from) or email.from == "" do
+      %{filename: filename, status: "error", error: "Email illisible (champ `from` introuvable)"}
+    else
+      do_route(filename, building_id, author_id, email)
     end
   end
 
-  defp ingest_document(building_id, author_id, %Plug.Upload{} = upload, _ext) do
+  defp ingest_document(building_id, author_id, %Plug.Upload{filename: filename} = upload) do
     case save_upload(upload) do
       {:ok, relative_path} ->
         url = "/" <> relative_path
+
+        body =
+          "[Document importé manuellement]\n\nFichier : " <> filename <>
+            "\nLien    : " <> url
 
         email = %{
           from: "ingestion@komun.app",
           from_name: "Import manuel",
           to: nil,
           cc: nil,
-          subject: filename_to_subject(upload.filename),
-          body: """
-          [Document importé manuellement]
-
-          Fichier : #{upload.filename}
-          Lien    : #{url}
-          """,
+          subject: filename_to_subject(filename),
+          body: body,
           received_at: DateTime.utc_now()
         }
 
-        do_route(upload.filename, building_id, author_id, email)
+        do_route(filename, building_id, author_id, email)
 
       {:error, reason} ->
-        %{filename: upload.filename, status: "error", error: "Échec sauvegarde : #{reason}"}
+        %{filename: filename, status: "error", error: "Échec sauvegarde : " <> inspect(reason)}
     end
   end
 
@@ -133,26 +132,27 @@ defmodule KomunBackendWeb.IngestionController do
     end
   end
 
-  # ── File collection ────────────────────────────────────────────────────
+  # ── Files extraction ──────────────────────────────────────────────────
 
-  # Phoenix can present `files` as a list (`files[]`) or a map indexed
-  # by string keys. Tolerate both shapes.
-  defp collect_files(%{"files" => files}) when is_list(files), do: Enum.filter(files, &match?(%Plug.Upload{}, &1))
-  defp collect_files(%{"files" => files}) when is_map(files), do: files |> Map.values() |> Enum.filter(&match?(%Plug.Upload{}, &1))
+  defp collect_files(%{"files" => files}) when is_list(files) do
+    Enum.filter(files, &match?(%Plug.Upload{}, &1))
+  end
+
+  defp collect_files(%{"files" => files}) when is_map(files) do
+    files |> Map.values() |> Enum.filter(&match?(%Plug.Upload{}, &1))
+  end
+
   defp collect_files(_), do: []
 
   # ── Auth ───────────────────────────────────────────────────────────────
 
-  defp authorize_privileged(conn, building_id, user) do
+  defp privileged?(user, building_id) do
     cond do
-      user.role == :super_admin -> :ok
-      user.role in @privileged_roles -> :ok
-      Buildings.get_member_role(building_id, user.id) in @privileged_roles -> :ok
-      true ->
-        conn
-        |> put_status(:forbidden)
-        |> json(%{error: "Réservé au syndic et au conseil syndical"})
-        |> halt()
+      is_nil(user) -> false
+      user.role == :super_admin -> true
+      user.role in @privileged_roles -> true
+      Buildings.get_member_role(building_id, user.id) in @privileged_roles -> true
+      true -> false
     end
   end
 
