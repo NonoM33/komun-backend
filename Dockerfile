@@ -47,10 +47,19 @@ COPY --from=builder --chown=nobody:root /app/_build/prod/rel/komun_backend ./
 # `Application.app_dir(:komun_backend, "priv/static/uploads")` resolves
 # to the volume regardless of the release version path.
 RUN mkdir -p /app/uploads && \
-    sh -c 'cd /app/lib/komun_backend-* && rm -rf priv/static/uploads && ln -s /app/uploads priv/static/uploads' && \
-    chown -R nobody:root /app/uploads
+    sh -c 'cd /app/lib/komun_backend-* && rm -rf priv/static/uploads && ln -s /app/uploads priv/static/uploads'
 
-USER nobody
+# Entrypoint chowns the upload dir at runtime then drops to nobody.
+# Coolify mounts the volume on top of /app/uploads with root:root ownership
+# (bind mount default), so the build-time chown gets overridden. We need
+# to fix permissions at container start, hence this small entrypoint.
+RUN printf '%s\n' \
+    '#!/bin/sh' \
+    'set -e' \
+    'mkdir -p /app/uploads' \
+    'chown -R nobody:root /app/uploads' \
+    'exec runuser -u nobody -- /bin/sh -c "/app/bin/komun_backend eval '"'"'KomunBackend.Release.migrate()'"'"' && /app/bin/komun_backend start"' \
+    > /entrypoint.sh && chmod +x /entrypoint.sh
 
 ENV PHX_SERVER=true
 EXPOSE 4000
@@ -58,4 +67,4 @@ EXPOSE 4000
 HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
   CMD curl -f http://localhost:4000/api/health || exit 1
 
-CMD ["/bin/sh", "-c", "/app/bin/komun_backend eval 'KomunBackend.Release.migrate()' && /app/bin/komun_backend start"]
+ENTRYPOINT ["/entrypoint.sh"]
