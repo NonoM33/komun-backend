@@ -22,6 +22,7 @@ defmodule KomunBackendWeb.IngestionController do
 
   alias KomunBackend.{Buildings, InboundEmails}
   alias KomunBackend.InboundEmails.EmlParser
+  alias KomunBackend.AI.EmailExtractor
   alias KomunBackend.Auth.Guardian
 
   @privileged_roles [:super_admin, :syndic_manager, :syndic_staff, :president_cs, :membre_cs]
@@ -93,30 +94,68 @@ defmodule KomunBackendWeb.IngestionController do
     end
   end
 
-  defp ingest_document(building_id, author_id, %Plug.Upload{filename: filename} = upload) do
+  defp ingest_document(building_id, author_id, %Plug.Upload{filename: filename, path: tmp_path} = upload) do
+    ext = filename |> Path.extname() |> String.downcase()
+
     case save_upload(upload) do
       {:ok, relative_path} ->
         url = "/" <> relative_path
 
-        body =
-          "[Document importé manuellement]\n\nFichier : " <> filename <>
-            "\nLien    : " <> url
+        # Pipeline IA — pdftotext / tesseract → Groq → from/subject/body.
+        # Si l'IA n'a pas pu lire (pas de texte, Groq down…) on tombe en
+        # fallback "Document importé" sans expéditeur, tout en gardant
+        # le lien vers le fichier dans le body.
+        email =
+          case EmailExtractor.extract(tmp_path, ext) do
+            {:ok, extracted} ->
+              build_extracted_email(extracted, filename, url)
 
-        email = %{
-          from: "ingestion@komun.app",
-          from_name: "Import manuel",
-          to: nil,
-          cc: nil,
-          subject: filename_to_subject(filename),
-          body: body,
-          received_at: DateTime.utc_now()
-        }
+            {:error, reason} ->
+              Logger.warning("[ingestion] EmailExtractor failed on #{filename}: #{inspect(reason)} — falling back")
+              build_fallback_email(filename, url)
+          end
 
         do_route(filename, building_id, author_id, email)
 
       {:error, reason} ->
         %{filename: filename, status: "error", error: "Échec sauvegarde : " <> inspect(reason)}
     end
+  end
+
+  # Email enrichi par Groq — on a from/subject/body issus du contenu
+  # du fichier. On épingle le lien vers le fichier en fin de body pour
+  # que l'admin puisse retomber dessus depuis la timeline.
+  defp build_extracted_email(extracted, filename, url) do
+    body =
+      (extracted[:body] || "")
+      |> String.trim()
+      |> case do
+        "" -> "(contenu vide)"
+        b -> b
+      end
+      |> Kernel.<>("\n\n---\nPièce jointe : " <> filename <> " (" <> url <> ")")
+
+    %{
+      from: extracted[:from] || "",
+      from_name: extracted[:from_name],
+      to: extracted[:to],
+      cc: nil,
+      subject: extracted[:subject] || filename_to_subject(filename),
+      body: body,
+      received_at: extracted[:received_at] || DateTime.utc_now()
+    }
+  end
+
+  defp build_fallback_email(filename, url) do
+    %{
+      from: "",
+      from_name: nil,
+      to: nil,
+      cc: nil,
+      subject: filename_to_subject(filename),
+      body: "[Document importé]\n\nFichier : " <> filename <> "\nLien    : " <> url,
+      received_at: DateTime.utc_now()
+    }
   end
 
   defp do_route(filename, building_id, author_id, email) do
