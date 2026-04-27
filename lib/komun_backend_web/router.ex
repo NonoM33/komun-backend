@@ -96,6 +96,9 @@ defmodule KomunBackendWeb.Router do
       post "/confirm-ai", IncidentController, :confirm_ai_answer
       delete "/confirm-ai", IncidentController, :unconfirm_ai_answer
       put "/ai-answer", IncidentController, :update_ai_answer
+
+      post   "/files",             IncidentController, :upload_file
+      delete "/files/:file_id",    IncidentController, :delete_file
     end
 
     # Doléances (réclamations collectives : rampe de parking trop anguleuse,
@@ -107,6 +110,9 @@ defmodule KomunBackendWeb.Router do
       post   "/suggest-experts",  DoleanceController, :suggest_experts
       post   "/escalate",         DoleanceController, :escalate
       get    "/events",           DoleanceController, :events
+
+      post   "/files",            DoleanceController, :upload_file
+      delete "/files/:file_id",   DoleanceController, :delete_file
     end
 
     # Diligences (procédure encadrée pour troubles anormaux du voisinage,

@@ -48,6 +48,7 @@ defmodule KomunBackend.Incidents.Incident do
     belongs_to :ai_answer_confirmed_by, KomunBackend.Accounts.User,
       foreign_key: :ai_answer_confirmed_by_id
     has_many :comments, KomunBackend.Incidents.IncidentComment
+    has_many :files, KomunBackend.Incidents.IncidentFile
 
     timestamps(type: :utc_datetime)
   end

@@ -21,7 +21,8 @@ defmodule KomunBackend.Doleances do
 
   import Ecto.Query
   alias KomunBackend.Repo
-  alias KomunBackend.Doleances.{Doleance, DoleanceSupport, DoleanceEvent}
+  alias KomunBackend.Accounts.User
+  alias KomunBackend.Doleances.{Doleance, DoleanceFile, DoleanceSupport, DoleanceEvent}
   alias KomunBackendWeb.BuildingChannel
 
   # ── Reads ────────────────────────────────────────────────────────────────
@@ -29,7 +30,7 @@ defmodule KomunBackend.Doleances do
   def list_doleances(building_id, filters \\ %{}) do
     from(d in Doleance,
       where: d.building_id == ^building_id,
-      preload: [:author, supports: :user],
+      preload: [:author, :files, supports: :user],
       order_by: [desc: d.inserted_at]
     )
     |> apply_filter(:status, filters["status"])
@@ -41,7 +42,7 @@ defmodule KomunBackend.Doleances do
 
   def get_doleance!(id) do
     Repo.get!(Doleance, id)
-    |> Repo.preload([:author, supports: :user])
+    |> Repo.preload([:author, :files, supports: :user])
   end
 
   def get_doleance(id), do: Repo.get(Doleance, id)
@@ -67,7 +68,7 @@ defmodule KomunBackend.Doleances do
 
     with {:ok, doleance} <- %Doleance{} |> Doleance.changeset(attrs) |> Repo.insert() do
       record_event(doleance.id, author_id, :created, %{})
-      doleance = Repo.preload(doleance, [:author, supports: :user])
+      doleance = Repo.preload(doleance, [:author, :files, supports: :user])
       BuildingChannel.broadcast_doleance(building_id, doleance)
       {:ok, doleance}
     end
@@ -84,7 +85,7 @@ defmodule KomunBackend.Doleances do
         })
       end
 
-      updated = Repo.preload(updated, [:author, supports: :user])
+      updated = Repo.preload(updated, [:author, :files, supports: :user])
       BuildingChannel.broadcast_doleance(updated.building_id, updated)
       {:ok, updated}
     end
@@ -92,6 +93,37 @@ defmodule KomunBackend.Doleances do
 
   def delete_doleance(%Doleance{} = doleance) do
     Repo.delete(doleance)
+  end
+
+  # ── Files (uploads) ───────────────────────────────────────────────────────
+
+  @doc """
+  Attache une pièce jointe (photo / document) à une doléance. Validation
+  taille / mime déléguée au controller (cf. `DoleanceController.upload_file/2`).
+  """
+  def attach_file(doleance_id, %User{} = user, attrs) do
+    attrs =
+      attrs
+      |> normalize_file_attrs()
+      |> Map.merge(%{
+        "doleance_id" => doleance_id,
+        "uploaded_by_id" => user.id
+      })
+
+    %DoleanceFile{}
+    |> DoleanceFile.changeset(attrs)
+    |> Repo.insert()
+  end
+
+  def get_file!(id), do: Repo.get!(DoleanceFile, id)
+
+  def delete_file(%DoleanceFile{} = file), do: Repo.delete(file)
+
+  defp normalize_file_attrs(attrs) when is_map(attrs) do
+    Map.new(attrs, fn
+      {k, v} when is_atom(k) -> {Atom.to_string(k), v}
+      {k, v} -> {k, v}
+    end)
   end
 
   @doc """
@@ -214,7 +246,7 @@ defmodule KomunBackend.Doleances do
         :ok
 
       d ->
-        d = Repo.preload(d, [:author, supports: :user])
+        d = Repo.preload(d, [:author, :files, supports: :user])
         BuildingChannel.broadcast_doleance(d.building_id, d)
     end
   end

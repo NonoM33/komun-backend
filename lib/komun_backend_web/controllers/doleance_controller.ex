@@ -2,8 +2,15 @@ defmodule KomunBackendWeb.DoleanceController do
   use KomunBackendWeb, :controller
 
   alias KomunBackend.{Buildings, Doleances}
+  alias KomunBackend.Doleances.DoleanceFile
   alias KomunBackend.AI.DoleanceDossier
   alias KomunBackend.Auth.Guardian
+
+  # Bornes alignées avec les diligences et les incidents (15 Mo, mêmes
+  # mime-types) — même UX côté front (un seul composant FileQueue partagé).
+  @max_upload_bytes 15 * 1024 * 1024
+  @allowed_mime_types ~w(application/pdf image/jpeg image/png image/heic image/webp)
+  @photo_mime_types ~w(image/jpeg image/png image/heic image/webp)
 
   # GET /api/v1/buildings/:building_id/doleances
   def index(conn, %{"building_id" => building_id} = params) do
@@ -132,7 +139,7 @@ defmodule KomunBackendWeb.DoleanceController do
     with :ok <- authorize_building(conn, building_id),
          :ok <- authorize_author_or_privileged(conn, building_id, user, doleance),
          {:ok, updated} <- Doleances.escalate(doleance, user.id) do
-      updated = KomunBackend.Repo.preload(updated, [:author, supports: :user])
+      updated = KomunBackend.Repo.preload(updated, [:author, :files, supports: :user])
       json(conn, %{data: doleance_json(updated)})
     else
       {:error, cs} -> conn |> put_status(:unprocessable_entity) |> json(%{errors: format_errors(cs)})
@@ -151,6 +158,112 @@ defmodule KomunBackendWeb.DoleanceController do
          :ok <- authorize_coproprietaire(conn, building_id, user) do
       event_list = Doleances.list_events(doleance_id)
       json(conn, %{data: Enum.map(event_list, &event_json/1)})
+    end
+  end
+
+  # POST /api/v1/buildings/:building_id/doleances/:doleance_id/files (multipart)
+  #
+  # Tout membre actif du bâtiment peut joindre une pièce à une doléance
+  # (les preuves font la force d'une plainte collective). La suppression
+  # est en revanche réservée à l'auteur ou aux rôles privilégiés.
+  def upload_file(conn, %{"building_id" => building_id, "doleance_id" => id} = params) do
+    user = Guardian.Plug.current_resource(conn)
+
+    with :ok <- authorize_building(conn, building_id) do
+      doleance = Doleances.get_doleance!(id)
+
+      cond do
+        doleance.building_id != building_id ->
+          conn |> put_status(:not_found) |> json(%{error: "Not found"}) |> halt()
+
+        true ->
+          do_upload(conn, doleance, user, params)
+      end
+    end
+  end
+
+  defp do_upload(conn, doleance, user, params) do
+    upload = Map.get(params, "file")
+
+    cond do
+      not match?(%Plug.Upload{}, upload) ->
+        conn
+        |> put_status(:unprocessable_entity)
+        |> json(%{error: "Fichier requis (multipart \"file\")"})
+        |> halt()
+
+      upload.content_type not in @allowed_mime_types ->
+        conn
+        |> put_status(:unprocessable_entity)
+        |> json(%{
+          error: "Type de fichier refusé (autorisés : PDF, JPEG, PNG, HEIC, WebP)"
+        })
+        |> halt()
+
+      file_size(upload.path) > @max_upload_bytes ->
+        conn
+        |> put_status(:unprocessable_entity)
+        |> json(%{error: "Fichier trop volumineux (max #{@max_upload_bytes} octets)"})
+        |> halt()
+
+      true ->
+        case save_upload(upload, doleance.id) do
+          {:ok, relative_path} ->
+            attrs = %{
+              "kind" => infer_kind(params["kind"], upload.content_type),
+              "filename" => upload.filename,
+              "file_url" => "/" <> relative_path,
+              "file_size_bytes" => file_size(upload.path),
+              "mime_type" => upload.content_type
+            }
+
+            case Doleances.attach_file(doleance.id, user, attrs) do
+              {:ok, _file} ->
+                fresh = Doleances.get_doleance!(doleance.id)
+
+                conn
+                |> put_status(:created)
+                |> json(%{data: doleance_json(fresh)})
+
+              {:error, cs} ->
+                conn
+                |> put_status(:unprocessable_entity)
+                |> json(%{errors: format_errors(cs)})
+            end
+
+          {:error, reason} ->
+            conn
+            |> put_status(:internal_server_error)
+            |> json(%{error: "Échec de l'enregistrement : #{inspect(reason)}"})
+        end
+    end
+  end
+
+  # DELETE /api/v1/buildings/:building_id/doleances/:doleance_id/files/:file_id
+  def delete_file(conn, %{
+        "building_id" => building_id,
+        "doleance_id" => id,
+        "file_id" => file_id
+      }) do
+    user = Guardian.Plug.current_resource(conn)
+    doleance = Doleances.get_doleance!(id)
+
+    with :ok <- authorize_building(conn, building_id),
+         :ok <- authorize_author_or_privileged(conn, building_id, user, doleance) do
+      file = Doleances.get_file!(file_id)
+
+      cond do
+        doleance.building_id != building_id ->
+          conn |> put_status(:not_found) |> json(%{error: "Not found"}) |> halt()
+
+        file.doleance_id != doleance.id ->
+          conn |> put_status(:not_found) |> json(%{error: "Not found"}) |> halt()
+
+        true ->
+          {:ok, _} = Doleances.delete_file(file)
+          maybe_remove_file(file.file_url)
+          send_resp(conn, :no_content, "")
+      end
     end
   end
 
@@ -216,6 +329,7 @@ defmodule KomunBackendWeb.DoleanceController do
       status: d.status,
       photo_urls: d.photo_urls,
       document_urls: d.document_urls,
+      files: files_json(d.files),
       target_kind: d.target_kind,
       target_name: d.target_name,
       target_email: d.target_email,
@@ -286,4 +400,74 @@ defmodule KomunBackendWeb.DoleanceController do
       end)
     end)
   end
+
+  defp files_json(%Ecto.Association.NotLoaded{}), do: []
+  defp files_json(nil), do: []
+
+  defp files_json(list) when is_list(list) do
+    Enum.map(list, fn %DoleanceFile{} = f ->
+      %{
+        id: f.id,
+        kind: f.kind,
+        filename: f.filename,
+        file_url: f.file_url,
+        file_size_bytes: f.file_size_bytes,
+        mime_type: f.mime_type,
+        uploaded_by_id: f.uploaded_by_id,
+        inserted_at: f.inserted_at
+      }
+    end)
+  end
+
+  # ── Upload helpers ────────────────────────────────────────────────────────
+
+  defp save_upload(%Plug.Upload{filename: filename, path: tmp_path}, doleance_id) do
+    ext = Path.extname(filename)
+    unique_name = "#{System.unique_integer([:positive, :monotonic])}#{ext}"
+
+    dest_dir =
+      Application.app_dir(
+        :komun_backend,
+        "priv/static/uploads/doleances/#{doleance_id}"
+      )
+
+    File.mkdir_p!(dest_dir)
+    dest_path = Path.join(dest_dir, unique_name)
+
+    case File.cp(tmp_path, dest_path) do
+      :ok -> {:ok, "uploads/doleances/#{doleance_id}/#{unique_name}"}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp file_size(path) do
+    case File.stat(path) do
+      {:ok, %{size: size}} -> size
+      _ -> nil
+    end
+  end
+
+  defp infer_kind(kind, _mime) when kind in ["photo", "document"], do: kind
+
+  defp infer_kind(_, mime) when is_binary(mime) do
+    if mime in @photo_mime_types, do: "photo", else: "document"
+  end
+
+  defp infer_kind(_, _), do: "document"
+
+  defp maybe_remove_file("/" <> rel) do
+    abs = Application.app_dir(:komun_backend, Path.join("priv/static", rel))
+
+    case File.rm(abs) do
+      :ok ->
+        :ok
+
+      {:error, reason} ->
+        require Logger
+        Logger.warning("[doleances] could not remove #{abs}: #{inspect(reason)}")
+        :ok
+    end
+  end
+
+  defp maybe_remove_file(_), do: :ok
 end
