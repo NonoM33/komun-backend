@@ -120,10 +120,7 @@ defmodule KomunBackendWeb.IngestionController do
   end
 
   defp do_route(filename, building_id, author_id, email) do
-    case InboundEmails.route_email(building_id, author_id, email) do
-      {:ok, %{action: :append, incident_id: id, comment_id: cid}} ->
-        %{filename: filename, status: "ok", action: "append", incident_id: id, comment_id: cid}
-
+    case InboundEmails.ingest_email(building_id, author_id, email) do
       {:ok, %{action: :create, incident_id: id}} ->
         %{filename: filename, status: "ok", action: "create", incident_id: id}
 

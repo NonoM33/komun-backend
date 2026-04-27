@@ -1,15 +1,17 @@
 defmodule KomunBackend.InboundEmails do
   @moduledoc """
-  Pipeline d'ingestion d'emails — helpers réutilisables depuis le
-  webhook public et l'ingestion admin.
+  Pipeline d'ingestion d'emails — helpers réutilisables.
+
+  Mode dégradé volontaire pour le MVP : on **crée systématiquement
+  un nouvel incident** par fichier ingéré. Pas de routage AI append-vs-
+  create — le module `KomunBackend.AI.IncidentRouter` n'est pas
+  encore présent sur stg/prod.
   """
 
   require Logger
 
   alias KomunBackend.{Incidents, Repo}
-  alias KomunBackend.AI.IncidentRouter
   alias KomunBackend.Accounts.User
-  alias KomunBackend.Incidents.Incident
 
   @doc "Récupère un super_admin pour porter les commentaires système."
   def system_author do
@@ -48,35 +50,20 @@ defmodule KomunBackend.InboundEmails do
   end
 
   @doc """
-  Route un email vers append (incident existant) ou create (nouveau).
-  Renvoie `{:ok, %{action: :append|:create, incident_id, comment_id?}}`
-  ou `{:error, reason}`.
+  Crée un incident à partir d'un email + 1er commentaire 📧.
+
+  Renvoie `{:ok, %{action: :create, incident_id: id}}` ou
+  `{:error, reason}`.
   """
-  def route_email(building_id, author_id, email)
+  def ingest_email(building_id, author_id, email)
       when is_binary(building_id) and is_binary(author_id) do
-    open_incidents = list_open_incidents(building_id)
-
-    case IncidentRouter.route(email, open_incidents) do
-      {:append, incident_id} ->
-        case Incidents.add_comment(incident_id, author_id, %{"body" => format_email_body(email)}) do
-          {:ok, comment} -> {:ok, %{action: :append, incident_id: incident_id, comment_id: comment.id}}
-          {:error, reason} -> {:error, reason}
-        end
-
-      :create ->
-        case create_incident_from_email(building_id, author_id, email) do
-          {:ok, incident} -> {:ok, %{action: :create, incident_id: incident.id}}
-          {:error, reason} -> {:error, reason}
-        end
+    case create_incident_from_email(building_id, author_id, email) do
+      {:ok, incident} -> {:ok, %{action: :create, incident_id: incident.id}}
+      {:error, reason} -> {:error, reason}
     end
   end
 
-  @doc """
-  Crée un incident minimal + 1er commentaire à partir d'un email.
-  Le summarizer (`IncidentSummarizer.regenerate(:all)`) regenère
-  titre + description + micro_summary après coup.
-  """
-  def create_incident_from_email(building_id, author_id, email) do
+  defp create_incident_from_email(building_id, author_id, email) do
     title =
       email
       |> stringy(:subject)
@@ -124,20 +111,5 @@ defmodule KomunBackend.InboundEmails do
 
   defp ensure_min_length(s, fallback) do
     if String.length(s) >= 5, do: s, else: fallback
-  end
-
-  # Incidents "ouverts" (open + in_progress) d'un bâtiment, juste les
-  # champs dont l'IncidentRouter a besoin (id/title/severity/résumé).
-  # On évite Incidents.list_incidents/3 qui preload tout l'agrégat
-  # (reporter / assignee / comments) — on n'en a pas besoin ici, et
-  # ça serait du gaspillage en runtime.
-  defp list_open_incidents(building_id) do
-    import Ecto.Query
-
-    Repo.all(
-      from i in Incident,
-        where: i.building_id == ^building_id and i.status in [:open, :in_progress],
-        order_by: [desc: i.inserted_at]
-    )
   end
 end
