@@ -136,6 +136,33 @@ defmodule KomunBackend.Buildings do
     end
   end
 
+  @doc """
+  Soft-delete d'un bâtiment : on marque `is_active=false` et on désactive
+  aussi ses memberships. Tous les endpoints qui listent les bâtiments (par
+  building_id scoped queries, `list_user_buildings`…) filtrent déjà sur
+  `is_active == true`.
+
+  Renvoie `{:error, :has_active_members}` si le bâtiment a encore des
+  résidents actifs — le caller doit les déplacer ou les retirer d'abord.
+  """
+  def delete_building(building) do
+    active_members =
+      from(m in BuildingMember,
+        where: m.building_id == ^building.id and m.is_active == true
+      )
+      |> Repo.aggregate(:count)
+
+    cond do
+      active_members > 0 ->
+        {:error, :has_active_members}
+
+      true ->
+        building
+        |> Ecto.Changeset.change(is_active: false)
+        |> Repo.update()
+    end
+  end
+
   # ── Members ───────────────────────────────────────────────────────────────
 
   def member?(building_id, user_id) do
