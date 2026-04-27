@@ -301,5 +301,12 @@ defmodule KomunBackendWeb.Router do
     post   "/buildings/:id/members",                  AdminController, :add_member
     put    "/buildings/:id/members/:user_id/role",    AdminController, :update_member_role
     delete "/buildings/:id/members/:user_id",         AdminController, :remove_member
+
+    # AI assistant — per-building custom prompt rules
+    get    "/buildings/:building_id/assistant-rules",     AdminAssistantRuleController, :index
+    post   "/buildings/:building_id/assistant-rules",     AdminAssistantRuleController, :create
+    patch  "/buildings/:building_id/assistant-rules/:id", AdminAssistantRuleController, :update
+    put    "/buildings/:building_id/assistant-rules/:id", AdminAssistantRuleController, :update
+    delete "/buildings/:building_id/assistant-rules/:id", AdminAssistantRuleController, :delete
   end
 end
