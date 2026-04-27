@@ -7,16 +7,23 @@ defmodule KomunBackend.InboundEmails do
   create — le module `KomunBackend.AI.IncidentRouter` n'est pas
   encore présent sur stg/prod.
 
-  ## RGPD / Privacy
+  ## RGPD / Privacy — split résumé public / contenu brut
 
-  Les incidents `:standard` sont visibles par tous les voisins du
-  bâtiment. Le contenu brut d'un email entrant peut contenir des noms,
-  emails, numéros d'appartement — données qui ne doivent pas fuiter.
+  - L'incident `description` reçoit un **résumé public anonymisé**
+    (Groq, sans noms/emails/numéros d'appartement). C'est ce que les
+    voisins voient quand ils ouvrent l'incident.
 
-  On utilise `KomunBackend.AI.EmailSummarizer` pour produire un résumé
-  public anonymisé qui remplace le contenu brut dans la card 📧
-  publiée. Le brut est consultable via le fichier d'origine (lien) en
-  cas de besoin du syndic / conseil.
+  - Le commentaire 📧 reçoit le **contenu brut** intégral (vrais
+    `from`, `to`, `cc`, body). Le backend `IncidentController.comment_json/2`
+    se charge déjà de redacter ce body pour les non-privilégiés (cf
+    `email_imported_comment?` + `redact_email_body`).
+
+    → Conseil / admin voient le brut.
+    → Voisins voient juste un placeholder "[Échange réservé au conseil]"
+      + le résumé public déjà visible dans la `description`.
+
+  Pas besoin de toucher au schema ou aux endpoints existants : la
+  redaction côté lecture est déjà en place.
   """
 
   require Logger
@@ -35,82 +42,47 @@ defmodule KomunBackend.InboundEmails do
     end
   end
 
-  @role_labels %{
-    "voisin" => "un voisin",
-    "conseil_syndical" => "le conseil syndical",
-    "syndic" => "le syndic",
-    "promoteur" => "le promoteur",
-    "prestataire" => "un prestataire",
-    "mairie" => "la mairie",
-    "autre" => "un correspondant"
-  }
-
   @doc """
-  Formate la card 📧 publique. Le `email` est attendu **déjà
-  anonymisé** : `body` doit contenir le résumé public, `from_name`
-  doit être un rôle générique (pas un nom de personne).
+  Formate la card 📧 du commentaire — **brut**, avec vrais headers
+  (from, to, cc). La redaction côté `comment_json` masquera ce contenu
+  aux non-privilégiés à la lecture.
   """
   def format_email_body(email) do
     subject = stringy(email, :subject)
-    sender_label = sender_label(email)
+    sender_email = stringy(email, :from)
+    sender_name = stringy(email, :from_name) |> default_to(sender_email) |> default_to("Inconnu")
+    to = stringy(email, :to)
     body = stringy(email, :body)
     date_label = stringy(email, :received_at)
 
+    cc_line =
+      case email[:cc] || email["cc"] do
+        nil -> ""
+        "" -> ""
+        list when is_list(list) and list != [] -> "Cc : " <> Enum.join(list, ", ") <> "\n"
+        s when is_binary(s) and s != "" -> "Cc : " <> s <> "\n"
+        _ -> ""
+      end
+
     "📧 **" <> subject <> "**\n" <>
-      "Émetteur : " <> sender_label <> "\n" <>
+      "De : **" <> sender_name <> "** <" <> sender_email <> ">\n" <>
+      "À : " <> to <> "\n" <>
+      cc_line <>
       "Date : " <> date_label <> "\n\n" <>
       body
   end
 
   @doc """
-  Crée un incident à partir d'un email + 1er commentaire 📧 anonymisé.
-
-  Pipeline :
-    1. `EmailSummarizer.summarize/2` produit un résumé public + rôle
-       de l'expéditeur (anonymisé).
-    2. On remplace `email.body` par le résumé et `email.from_name` par
-       le rôle générique avant d'appeler `format_email_body`.
-    3. Si Groq échoue, on tombe en fallback : titre = sujet, body =
-       message générique "[Document importé — voir pièce jointe]".
-
-  Renvoie `{:ok, %{action: :create, incident_id: id}}` ou
-  `{:error, reason}`.
+  Crée un incident à partir d'un email :
+    * `incident.description` = résumé Groq anonyme (visible voisins)
+    * 1er commentaire 📧 = contenu brut intégral (redacté côté lecture
+      pour les non-privilégiés)
   """
   def ingest_email(building_id, author_id, email)
       when is_binary(building_id) and is_binary(author_id) do
-    sanitized = anonymize(email)
-
-    case create_incident_from_email(building_id, author_id, sanitized) do
+    case create_incident_from_email(building_id, author_id, email) do
       {:ok, incident} -> {:ok, %{action: :create, incident_id: incident.id}}
       {:error, reason} -> {:error, reason}
-    end
-  end
-
-  # Demande à Groq un résumé anonyme et remplace les champs brut. Si
-  # Groq échoue, on remplace quand même le body brut par un placeholder
-  # neutre — pas question de publier le contenu intégral aux voisins.
-  defp anonymize(email) do
-    subject = stringy(email, :subject)
-    body = stringy(email, :body)
-
-    case EmailSummarizer.summarize(subject, body) do
-      {:ok, %{summary: summary, sender_role: role}} ->
-        email
-        |> Map.put(:body, summary)
-        |> Map.put(:from_name, Map.get(@role_labels, role, "un correspondant"))
-        |> Map.put(:from, "")
-        |> Map.put(:to, nil)
-        |> Map.put(:cc, nil)
-
-      {:error, reason} ->
-        Logger.warning("[inbound_emails] anonymize fallback: #{inspect(reason)}")
-
-        email
-        |> Map.put(:body, "[Document reçu — résumé indisponible. Voir la pièce jointe pour le détail.]")
-        |> Map.put(:from_name, "un correspondant")
-        |> Map.put(:from, "")
-        |> Map.put(:to, nil)
-        |> Map.put(:cc, nil)
     end
   end
 
@@ -121,14 +93,7 @@ defmodule KomunBackend.InboundEmails do
       |> String.slice(0, 200)
       |> ensure_min_length("Email entrant — sujet à préciser")
 
-    description =
-      email
-      |> stringy(:body)
-      |> String.slice(0, 1500)
-      |> case do
-        "" -> "(résumé indisponible)"
-        s -> s
-      end
+    description = build_public_description(email)
 
     attrs = %{
       "title" => title,
@@ -144,12 +109,33 @@ defmodule KomunBackend.InboundEmails do
     end
   end
 
-  # ── Helpers privés ────────────────────────────────────────────────────
+  # Le résumé public anonyme va dans la `description` de l'incident,
+  # qui est servie telle quelle aux voisins par `IncidentController`.
+  # Si Groq échoue, fallback neutre — jamais le body brut publié.
+  defp build_public_description(email) do
+    subject = stringy(email, :subject)
+    body = stringy(email, :body)
 
-  defp sender_label(email) do
-    name = stringy(email, :from_name)
-    if name == "", do: "un correspondant", else: name
+    case EmailSummarizer.summarize(subject, body) do
+      {:ok, %{summary: summary}} ->
+        summary
+        |> String.trim()
+        |> case do
+          "" -> fallback_description()
+          s -> s
+        end
+
+      {:error, reason} ->
+        Logger.warning("[inbound_emails] summarize fallback: #{inspect(reason)}")
+        fallback_description()
+    end
   end
+
+  defp fallback_description do
+    "Email reçu — un membre du conseil syndical examinera le contenu et le résumera ici dès que possible."
+  end
+
+  # ── Helpers privés ────────────────────────────────────────────────────
 
   defp stringy(email, key) when is_atom(key) do
     str_key = Atom.to_string(key)
@@ -161,6 +147,9 @@ defmodule KomunBackend.InboundEmails do
   defp to_string_safe(s) when is_binary(s), do: s
   defp to_string_safe(%DateTime{} = dt), do: Calendar.strftime(dt, "%d/%m/%Y %H:%M")
   defp to_string_safe(other), do: to_string(other)
+
+  defp default_to("", fallback), do: fallback
+  defp default_to(value, _fallback), do: value
 
   defp ensure_min_length(s, fallback) do
     if String.length(s) >= 5, do: s, else: fallback
