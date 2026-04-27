@@ -45,6 +45,13 @@ defmodule KomunBackendWeb.Router do
     # GDPR consent log — accepts anonymous visitors (visitor_id param)
     # or authenticated users (user_id attached via optional auth).
     post "/consents", ConsentController, :create
+
+    # Webhook entrant pour les emails redirigés vers Komun (Resend,
+    # Cloudmailin, Gmail forwarder…). L'endpoint vérifie un secret partagé
+    # via le header `X-Komun-Webhook-Secret` (variable d'env
+    # `INBOUND_EMAIL_WEBHOOK_SECRET`). Tant que le secret n'est pas défini
+    # sur le déploiement, l'endpoint répond 404.
+    post "/webhooks/inbound_email", InboundEmailWebhookController, :create
   end
 
   # ── Authenticated routes ──────────────────────────────────────────────────
@@ -90,6 +97,7 @@ defmodule KomunBackendWeb.Router do
       post "/confirm-ai", IncidentController, :confirm_ai_answer
       delete "/confirm-ai", IncidentController, :unconfirm_ai_answer
       put "/ai-answer", IncidentController, :update_ai_answer
+      post "/regenerate-summary", IncidentController, :regenerate_summary
     end
 
     # Doléances (réclamations collectives : rampe de parking trop anguleuse,

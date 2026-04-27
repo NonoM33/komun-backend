@@ -94,6 +94,13 @@ defmodule KomunBackend.Incidents do
         # Fire-and-forget AI triage. Groq fills ai_answer on the incident and
         # the resident polls for the update. Failure leaves the incident as-is.
         KomunBackend.AI.Triage.triage_incident_async(incident)
+
+        # Génère aussi un micro_summary (1 phrase pour la vue liste).
+        # On ne touche ni au titre ni à la description ici — le résident
+        # vient de les écrire, on respecte ses mots. Mode `:all` est
+        # déclenché plus tard si l'incident reçoit des emails (cf.
+        # webhook + endpoint regenerate_summary).
+        KomunBackend.AI.IncidentSummarizer.summarize_async(incident, mode: :micro_only)
       end
 
       {:ok, incident}
@@ -232,7 +239,30 @@ defmodule KomunBackend.Incidents do
         %{type: "incident_comment", incident_id: incident_id, building_id: incident.building_id}
       )
 
+      # Si le commentaire vient d'un email importé/webhook (préfixe 📧),
+      # on relance le summarizer en mode :all : la chronologie a évolué,
+      # le micro_summary et la description doivent suivre. Pour un
+      # commentaire libre tapé par un résident, on ne change rien.
+      if is_binary(comment.body) and String.starts_with?(comment.body, "📧") do
+        KomunBackend.AI.IncidentSummarizer.summarize_async(incident, mode: :all)
+      end
+
       {:ok, comment}
     end
+  end
+
+  @doc """
+  Liste les incidents ouverts (status :open ou :in_progress) d'un bâtiment.
+  Utilisé par le router AI pour décider si un email entrant continue un
+  dossier existant ou en démarre un nouveau.
+  """
+  def list_open_incidents(building_id) do
+    import Ecto.Query
+
+    Repo.all(
+      from i in Incident,
+        where: i.building_id == ^building_id and i.status in [:open, :in_progress],
+        order_by: [desc: i.inserted_at]
+    )
   end
 end

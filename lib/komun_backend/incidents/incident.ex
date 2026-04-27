@@ -8,6 +8,12 @@ defmodule KomunBackend.Incidents.Incident do
   schema "incidents" do
     field :title, :string
     field :description, :string
+    # Résumé ultra-court (~ 1 phrase, ≤ 200 chars) généré par Groq via
+    # `AI.IncidentSummarizer`. Affiché dans la vue liste/Kanban pour
+    # donner le contexte du dossier en un coup d'œil sans gonfler les
+    # cards. Tombe en fallback sur la 1re ligne de la description si la
+    # regen échoue.
+    field :micro_summary, :string
     field :category, Ecto.Enum,
       values: [:plomberie, :electricite, :ascenseur, :serrurerie, :toiture,
                :facades, :parties_communes, :espaces_verts, :autre]
@@ -49,13 +55,14 @@ defmodule KomunBackend.Incidents.Incident do
 
   def changeset(incident, attrs) do
     incident
-    |> cast(attrs, [:title, :description, :category, :severity, :status,
+    |> cast(attrs, [:title, :description, :micro_summary, :category, :severity, :status,
                     :photo_urls, :location, :lot_number, :building_id, :reporter_id,
                     :assignee_id, :resolution_note, :visibility,
                     :ai_answer, :ai_answered_at, :ai_model,
                     :ai_answer_confirmed_at, :ai_answer_confirmed_by_id])
     |> validate_required([:title, :description, :category, :building_id, :reporter_id])
     |> validate_length(:title, min: 5, max: 200)
+    |> validate_length(:micro_summary, max: 200)
   end
 
   def resolve_changeset(incident, note) do

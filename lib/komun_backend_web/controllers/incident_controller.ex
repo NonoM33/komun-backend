@@ -129,6 +129,33 @@ defmodule KomunBackendWeb.IncidentController do
     end
   end
 
+  # POST /api/v1/buildings/:building_id/incidents/:incident_id/regenerate-summary
+  #
+  # Force la regénération du titre + description (markdown) + micro_summary
+  # via Groq, à partir des emails du dossier. Pour l'utiliser depuis l'UI
+  # (bouton "Reformuler avec l'IA") ou pour rattraper en bulk les anciens
+  # incidents importés. Synchrone : la requête attend le retour Groq pour
+  # renvoyer la version mise à jour. Réservé aux membres privilégiés.
+  def regenerate_summary(conn, %{"building_id" => building_id, "incident_id" => id}) do
+    user = Guardian.Plug.current_resource(conn)
+
+    with :ok <- authorize_privileged(conn, building_id, user) do
+      case KomunBackend.AI.IncidentSummarizer.regenerate(id, mode: :all) do
+        {:ok, updated} ->
+          updated = KomunBackend.Repo.preload(updated, [:reporter, :assignee, comments: :author])
+          json(conn, %{data: incident_json(updated, true)})
+
+        {:error, :not_found} ->
+          conn |> put_status(:not_found) |> json(%{error: "Incident not found"})
+
+        {:error, reason} ->
+          conn
+          |> put_status(:unprocessable_entity)
+          |> json(%{error: "AI summarizer failed", reason: inspect(reason)})
+      end
+    end
+  end
+
   # PUT /api/v1/buildings/:building_id/incidents/:incident_id/ai-answer
   #
   # Edit the AI answer text (and optionally validate it in one shot by
@@ -184,7 +211,7 @@ defmodule KomunBackendWeb.IncidentController do
   defp incident_json(inc, privileged?) do
     comments = case inc.comments do
       %Ecto.Association.NotLoaded{} -> []
-      comments -> Enum.map(comments, &comment_json/1)
+      comments -> Enum.map(comments, &comment_json(&1, privileged?))
     end
 
     # Pour `:council_only`, on ne renvoie JAMAIS l'identité du signaleur,
@@ -207,6 +234,7 @@ defmodule KomunBackendWeb.IncidentController do
       id: inc.id,
       title: inc.title,
       description: inc.description,
+      micro_summary: inc.micro_summary,
       category: inc.category,
       severity: inc.severity,
       status: inc.status,
@@ -234,16 +262,84 @@ defmodule KomunBackendWeb.IncidentController do
     }
   end
 
-  defp comment_json(c), do: %{
-    id: c.id,
-    body: c.body,
-    is_internal: c.is_internal,
-    incident_id: c.incident_id,
-    author_id: c.author_id,
-    author_name: if(c.author, do: author_name(c.author), else: nil),
-    author_avatar_url: if(c.author, do: c.author.avatar_url, else: nil),
-    inserted_at: c.inserted_at
-  }
+  # Les commentaires importés depuis Gmail sont préfixés par "📧" et
+  # contiennent un sujet, l'expéditeur réel et le corps de l'email. Pour
+  # un copropriétaire qui n'est pas membre du conseil syndical / syndic,
+  # ces informations sont confidentielles : on ne lui sert que la date et
+  # la nature de l'expéditeur (Syndic LAMY, Promoteur Nexity, …) afin
+  # qu'il sache qu'un échange a eu lieu, sans en lire le contenu.
+  defp comment_json(c, privileged?) do
+    body =
+      if not privileged? and email_imported_comment?(c.body) do
+        redact_email_body(c.body)
+      else
+        c.body
+      end
+
+    redacted_email? = body != c.body
+
+    %{
+      id: c.id,
+      body: body,
+      is_internal: c.is_internal,
+      incident_id: c.incident_id,
+      author_id: if(redacted_email?, do: nil, else: c.author_id),
+      author_name: if(redacted_email? or is_nil(c.author), do: nil, else: author_name(c.author)),
+      author_avatar_url: if(redacted_email? or is_nil(c.author), do: nil, else: c.author.avatar_url),
+      inserted_at: c.inserted_at
+    }
+  end
+
+  defp email_imported_comment?(body) when is_binary(body) do
+    String.starts_with?(body, "📧")
+  end
+
+  defp email_imported_comment?(_), do: false
+
+  # Garde uniquement la date du header `Date :` et le type d'interlocuteur
+  # (déduit du domaine de l'expéditeur). Le sujet, le nom et l'email réels
+  # sont strippés.
+  defp redact_email_body(body) do
+    date_label = extract_email_header(body, "Date") |> default_to("date inconnue")
+    sender_kind = body |> extract_email_header("De") |> infer_correspondent_kind()
+
+    # On préserve le format que le parseur frontend connaît
+    # (📧 **sujet** / De : **nom** <email> / Date : ...) pour qu'il
+    # restitue correctement la card "redacted" — sujet, nom et email
+    # réels sont remplacés par des placeholders neutres.
+    """
+    📧 **[Échange réservé au conseil syndical]**
+    De : **Échange** <#{sender_kind}@redacted.local>
+    Date : #{date_label}
+
+    Le contenu détaillé de cet échange est réservé aux membres du conseil syndical.
+    """
+  end
+
+  defp extract_email_header(body, key) do
+    pattern = ~r/^#{Regex.escape(key)}\s*:\s*(.+)$/m
+
+    case Regex.run(pattern, body) do
+      [_, value] -> String.trim(value)
+      _ -> ""
+    end
+  end
+
+  defp default_to("", fallback), do: fallback
+  defp default_to(value, _fallback), do: value
+
+  defp infer_correspondent_kind(from_line) do
+    line = String.downcase(from_line)
+
+    cond do
+      String.contains?(line, "lamy-immobilier.fr") -> "syndic"
+      String.contains?(line, "nexity.fr") -> "promoteur"
+      String.contains?(line, "wissous.fr") -> "mairie"
+      String.contains?(line, "paris-saclay.com") -> "collectivite"
+      String.contains?(line, "esdfrance.fr") -> "prestataire"
+      true -> "conseil"
+    end
+  end
 
   defp author_name(u) do
     if u.first_name && u.last_name, do: "#{u.first_name} #{u.last_name}", else: u.email
