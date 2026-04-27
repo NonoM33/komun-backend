@@ -106,9 +106,11 @@ defmodule KomunBackend.InboundEmails.EmlParser do
   defp decode_q(s) do
     s
     |> String.replace("_", " ")
-    |> String.replace(~r/=([0-9A-Fa-f]{2})/, fn _, hex ->
-      <<String.to_integer(hex, 16)>>
-    end)
+    |> (fn str ->
+          Regex.replace(~r/=([0-9A-Fa-f]{2})/, str, fn _full, hex ->
+            <<String.to_integer(hex, 16)>>
+          end)
+        end).()
   end
 
   # Body extraction : if multipart/alternative or multipart/mixed, keep
@@ -195,9 +197,11 @@ defmodule KomunBackend.InboundEmails.EmlParser do
   defp decode_quoted_printable(body) do
     body
     |> String.replace(~r/=\r?\n/, "")
-    |> String.replace(~r/=([0-9A-Fa-f]{2})/, fn _, hex ->
-      <<String.to_integer(hex, 16)>>
-    end)
+    |> (fn str ->
+          Regex.replace(~r/=([0-9A-Fa-f]{2})/, str, fn _full, hex ->
+            <<String.to_integer(hex, 16)>>
+          end)
+        end).()
   end
 
   defp strip_html(html), do: html |> String.replace(~r/<[^>]+>/, "") |> String.replace(~r/\s+\n/, "\n")
