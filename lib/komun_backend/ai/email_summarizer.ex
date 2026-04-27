@@ -67,16 +67,31 @@ defmodule KomunBackend.AI.EmailSummarizer do
         %{role: :user, content: text}
       ]
 
-      # Kimi (moonshotai/kimi-k2-instruct) pour cette tâche : meilleurs
-      # résumés multilingue/français que gpt-oss-120b sur des emails de
-      # copro avec fil de discussion long et signatures bruyantes.
+      # `openai/gpt-oss-120b` est le modèle Groq le plus fiable pour
+      # produire du JSON strict en français. Kimi (kimi-k2-instruct) a
+      # été essayé brièvement mais retourne souvent du JSON imparfait
+      # (markdown wrap, texte avant/après…) qui faisait tomber le
+      # parser et déclencher le fallback générique côté incident.
+      # Override possible via la var d'env GROQ_SUMMARIZER_MODEL.
+      model = System.get_env("GROQ_SUMMARIZER_MODEL") || "openai/gpt-oss-120b"
+
       case Groq.complete(messages,
-             model: "moonshotai/kimi-k2-instruct",
+             model: model,
              temperature: 0.2,
-             max_tokens: 600
+             max_tokens: 800
            ) do
         {:ok, %{content: raw}} ->
-          parse(raw)
+          case parse(raw) do
+            {:ok, _} = ok ->
+              ok
+
+            {:error, reason} ->
+              Logger.warning(
+                "[email_summarizer] parse failed (#{inspect(reason)}) — raw: #{String.slice(raw || "", 0, 400)}"
+              )
+
+              {:error, reason}
+          end
 
         {:error, reason} ->
           Logger.warning("[email_summarizer] Groq failed: #{inspect(reason)}")
@@ -92,15 +107,8 @@ defmodule KomunBackend.AI.EmailSummarizer do
   end
 
   defp parse(content) do
-    cleaned =
-      content
-      |> String.trim()
-      |> String.replace(~r/^```(?:json)?\s*/, "")
-      |> String.replace(~r/\s*```$/, "")
-      |> String.trim()
-
-    case Jason.decode(cleaned) do
-      {:ok, %{"summary" => summary} = json} when is_binary(summary) ->
+    case extract_json(content || "") do
+      {:ok, %{"summary" => summary} = json} when is_binary(summary) and summary != "" ->
         {:ok,
          %{
            summary: String.trim(summary),
@@ -110,8 +118,35 @@ defmodule KomunBackend.AI.EmailSummarizer do
       {:ok, _} ->
         {:error, :missing_summary}
 
-      {:error, _} ->
-        {:error, :invalid_json}
+      {:error, _} = err ->
+        err
+    end
+  end
+
+  # Tolère :
+  #   * JSON pur
+  #   * Wrap ```json ... ```
+  #   * Texte explicatif avant/après le JSON
+  #   * `summary` dans une 1re tentative, puis fallback sur 1er objet trouvé
+  defp extract_json(raw) do
+    stripped =
+      raw
+      |> String.trim()
+      |> String.replace(~r/^```(?:json)?\s*/, "")
+      |> String.replace(~r/\s*```$/, "")
+      |> String.trim()
+
+    with {:error, _} <- Jason.decode(stripped) do
+      case Regex.run(~r/\{(?:[^{}]|\{[^{}]*\})*\}/s, stripped) do
+        [match] ->
+          case Jason.decode(match) do
+            {:ok, _} = ok -> ok
+            {:error, _} -> {:error, :invalid_json}
+          end
+
+        _ ->
+          {:error, :invalid_json}
+      end
     end
   end
 
