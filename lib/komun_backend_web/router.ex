@@ -85,6 +85,11 @@ defmodule KomunBackendWeb.Router do
     get    "/buildings/:id/members", BuildingController, :members
     get    "/buildings/:id/lots", BuildingController, :lots
 
+    # Ingestion intelligente : upload d'emails / PDF / images vers la
+    # pipeline d'incident AI. Le controller fait son propre check
+    # privileged (super_admin / syndic / conseil syndical).
+    post "/buildings/:building_id/ingestions/files", IngestionController, :create
+
     # Incidents
     resources "/buildings/:building_id/incidents", IncidentController, except: [:new, :edit] do
       post "/comments", IncidentCommentController, :create
