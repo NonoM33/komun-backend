@@ -47,7 +47,7 @@ defmodule KomunBackendWeb.DoleanceController do
 
     with :ok <- authorize_building(conn, building_id),
          :ok <- authorize_author_or_privileged(conn, building_id, user, doleance) do
-      case Doleances.update_doleance(doleance, attrs) do
+      case Doleances.update_doleance(doleance, attrs, user.id) do
         {:ok, updated} -> json(conn, %{data: doleance_json(updated)})
         {:error, cs} -> conn |> put_status(:unprocessable_entity) |> json(%{errors: format_errors(cs)})
       end
@@ -69,8 +69,6 @@ defmodule KomunBackendWeb.DoleanceController do
   # POST /api/v1/buildings/:building_id/doleances/:id/support
   #
   # Upsert the current user's co-signature (comment + optional photos).
-  # The frontend calls this both for "je me joins" (empty body) and for
-  # "je complète mon témoignage" (body with comment/photos).
   def add_support(conn, params) do
     %{"building_id" => building_id, "doleance_id" => doleance_id} = params
     user = Guardian.Plug.current_resource(conn)
@@ -97,17 +95,13 @@ defmodule KomunBackendWeb.DoleanceController do
   end
 
   # POST /api/v1/buildings/:building_id/doleances/:id/generate-letter
-  #
-  # Privileged members can run the AI letter generator — we don't want
-  # any member triggering Groq calls uncontrollably. The author of the
-  # doléance is also allowed, since they own the file they built.
   def generate_letter(conn, %{"building_id" => building_id, "doleance_id" => doleance_id}) do
     user = Guardian.Plug.current_resource(conn)
     doleance = Doleances.get_doleance!(doleance_id)
 
     with :ok <- authorize_building(conn, building_id),
          :ok <- authorize_author_or_privileged(conn, building_id, user, doleance) do
-      case DoleanceDossier.generate_letter(doleance) do
+      case DoleanceDossier.generate_letter(doleance, user.id) do
         {:ok, updated} -> json(conn, %{data: doleance_json(updated)})
         {:error, :no_ai_key} -> conn |> put_status(:service_unavailable) |> json(%{error: "L'assistant IA est désactivé sur cet environnement."})
         {:error, reason} -> conn |> put_status(:bad_gateway) |> json(%{error: "Génération IA échouée : #{inspect(reason)}"})
@@ -122,7 +116,7 @@ defmodule KomunBackendWeb.DoleanceController do
 
     with :ok <- authorize_building(conn, building_id),
          :ok <- authorize_author_or_privileged(conn, building_id, user, doleance) do
-      case DoleanceDossier.suggest_experts(doleance) do
+      case DoleanceDossier.suggest_experts(doleance, user.id) do
         {:ok, updated} -> json(conn, %{data: doleance_json(updated)})
         {:error, :no_ai_key} -> conn |> put_status(:service_unavailable) |> json(%{error: "L'assistant IA est désactivé sur cet environnement."})
         {:error, reason} -> conn |> put_status(:bad_gateway) |> json(%{error: "Suggestions IA échouées : #{inspect(reason)}"})
@@ -137,7 +131,7 @@ defmodule KomunBackendWeb.DoleanceController do
 
     with :ok <- authorize_building(conn, building_id),
          :ok <- authorize_author_or_privileged(conn, building_id, user, doleance),
-         {:ok, updated} <- Doleances.escalate(doleance) do
+         {:ok, updated} <- Doleances.escalate(doleance, user.id) do
       updated = KomunBackend.Repo.preload(updated, [:author, supports: :user])
       json(conn, %{data: doleance_json(updated)})
     else
@@ -145,9 +139,29 @@ defmodule KomunBackendWeb.DoleanceController do
     end
   end
 
+  # GET /api/v1/buildings/:building_id/doleances/:doleance_id/events
+  #
+  # Timeline visible aux copropriétaires uniquement (pas aux locataires).
+  # Les locataires n'ont pas de parts dans la copropriété et ne sont pas
+  # concernés par les démarches collectives du conseil.
+  def events(conn, %{"building_id" => building_id, "doleance_id" => doleance_id}) do
+    user = Guardian.Plug.current_resource(conn)
+
+    with :ok <- authorize_building(conn, building_id),
+         :ok <- authorize_coproprietaire(conn, building_id, user) do
+      event_list = Doleances.list_events(doleance_id)
+      json(conn, %{data: Enum.map(event_list, &event_json/1)})
+    end
+  end
+
   # ── Authorization helpers ────────────────────────────────────────────────
 
   @privileged_roles [:super_admin, :syndic_manager, :syndic_staff, :president_cs, :membre_cs]
+
+  # Locataires are explicitly excluded from the timeline — they can see the
+  # doléance itself (as members of the building) but not the action history
+  # which may reveal privileged council deliberations.
+  @tenant_roles [:locataire]
 
   defp authorize_building(conn, building_id) do
     user = Guardian.Plug.current_resource(conn)
@@ -156,6 +170,21 @@ defmodule KomunBackendWeb.DoleanceController do
       :ok
     else
       conn |> put_status(403) |> json(%{error: "Forbidden"}) |> halt()
+    end
+  end
+
+  defp authorize_coproprietaire(conn, building_id, user) do
+    member_role = Buildings.get_member_role(building_id, user.id)
+
+    cond do
+      user.role == :super_admin -> :ok
+      user.role in @privileged_roles -> :ok
+      member_role in @privileged_roles -> :ok
+      user.role in @tenant_roles ->
+        conn |> put_status(403) |> json(%{error: "Réservé aux copropriétaires."}) |> halt()
+      member_role in @tenant_roles ->
+        conn |> put_status(403) |> json(%{error: "Réservé aux copropriétaires."}) |> halt()
+      true -> :ok
     end
   end
 
@@ -204,6 +233,16 @@ defmodule KomunBackendWeb.DoleanceController do
       support_count: length(supports_list(d.supports)),
       inserted_at: d.inserted_at,
       updated_at: d.updated_at
+    }
+  end
+
+  defp event_json(e) do
+    %{
+      id: e.id,
+      event_type: e.event_type,
+      payload: e.payload,
+      actor: maybe_user(e.actor),
+      inserted_at: e.inserted_at
     }
   end
 

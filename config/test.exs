@@ -18,7 +18,18 @@ config :komun_backend, KomunBackend.Auth.Guardian,
 
 config :komun_backend, Oban, testing: :inline
 
+# Les battles utilisent un job Oban schedulé à `ends_at` (J+3 par
+# défaut). En test, Oban `:inline` ignore `scheduled_at` et exécuterait
+# immédiatement la transition de round, ce qui rend le cycle non
+# testable. On bypass le scheduling : les tests appellent
+# `Battles.advance_battle!/1` directement.
+config :komun_backend, :skip_battle_scheduling, true
+
 config :komun_backend, KomunBackend.Mailer, adapter: Swoosh.Adapters.Test
+
+# Stripe : adapter mock in-memory en tests, pas d'appel réseau ni besoin
+# de STRIPE_SECRET_KEY pour faire passer la CI.
+config :komun_backend, :stripe_api_module, KomunBackend.StripeApi.Mock
 
 config :swoosh, :api_client, false
 

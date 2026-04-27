@@ -26,6 +26,7 @@ defmodule KomunBackendWeb.Router do
 
     post "/auth/magic-link", AuthController, :request_magic_link
     get  "/auth/magic-link/verify", AuthController, :verify_magic_link
+    post "/auth/magic-code/verify", AuthController, :verify_magic_code
     post "/auth/refresh", AuthController, :refresh
     post "/auth/logout", AuthController, :logout
 
@@ -100,7 +101,27 @@ defmodule KomunBackendWeb.Router do
       post   "/generate-letter",  DoleanceController, :generate_letter
       post   "/suggest-experts",  DoleanceController, :suggest_experts
       post   "/escalate",         DoleanceController, :escalate
+      get    "/events",           DoleanceController, :events
     end
+
+    # Diligences (procédure encadrée pour troubles anormaux du voisinage,
+    # réservée au syndic + conseil syndical — gating dans le controller).
+    get   "/buildings/:building_id/diligences",        DiligenceController, :index
+    post  "/buildings/:building_id/diligences",        DiligenceController, :create
+    get   "/buildings/:building_id/diligences/:id",    DiligenceController, :show
+    patch "/buildings/:building_id/diligences/:id",    DiligenceController, :update
+    put   "/buildings/:building_id/diligences/:id",    DiligenceController, :update
+
+    patch "/buildings/:building_id/diligences/:id/steps/:step_number",
+          DiligenceController, :update_step
+
+    post   "/buildings/:building_id/diligences/:id/files",
+           DiligenceController, :upload_file
+    delete "/buildings/:building_id/diligences/:id/files/:file_id",
+           DiligenceController, :delete_file
+
+    post "/buildings/:building_id/diligences/:id/generate-letter",
+         DiligenceController, :generate_letter
 
     # Announcements
     resources "/buildings/:building_id/announcements", AnnouncementController,
@@ -118,6 +139,15 @@ defmodule KomunBackendWeb.Router do
     get  "/buildings/:building_id/votes/:id",     VoteController, :show
     post "/buildings/:building_id/votes/:id/respond", VoteController, :respond
     put  "/buildings/:building_id/votes/:id/close",   VoteController, :close
+
+    # Battles (vote à élimination en plusieurs rounds, ex. choix de
+    # mobilier collectif). Création réservée CS + syndic ; tous les
+    # membres du bâtiment peuvent voter.
+    get  "/buildings/:building_id/battles",            BattleController, :index
+    post "/buildings/:building_id/battles",            BattleController, :create
+    get  "/buildings/:building_id/battles/:id",        BattleController, :show
+    post "/buildings/:building_id/battles/:id/vote",   BattleController, :cast_vote
+    post "/buildings/:building_id/battles/:id/advance", BattleController, :advance
 
     # Projects (copro devis workflow) — groups devis by project, then starts
     # a vote on the chosen devis.
@@ -139,6 +169,28 @@ defmodule KomunBackendWeb.Router do
     post   "/buildings/:building_id/documents/:id/archive", DocumentController, :archive
     delete "/buildings/:building_id/documents/:id/archive", DocumentController, :unarchive
     resources "/buildings/:building_id/documents", DocumentController,
+      except: [:new, :edit]
+
+    # Articles éditoriaux (Notion-like, workflow brouillon → relecture → publié).
+    # Création / édition réservées au CS + syndic ; lecture des `:published`
+    # ouverte à tout membre du bâtiment.
+    post "/buildings/:building_id/articles/:id/transition",
+         ArticleController, :transition
+    resources "/buildings/:building_id/articles", ArticleController,
+      except: [:new, :edit]
+
+    # Written documents (PV de conseil rédigés en ligne, etc.). Mêmes règles
+    # d'accès que les articles. Archive / unarchive via routes dédiées,
+    # comme pour les `documents` téléversés, pour ne pas confondre avec
+    # un soft-delete via DELETE.
+    post   "/buildings/:building_id/written_documents/:id/transition",
+           WrittenDocumentController, :transition
+    post   "/buildings/:building_id/written_documents/:id/archive",
+           WrittenDocumentController, :archive
+    delete "/buildings/:building_id/written_documents/:id/archive",
+           WrittenDocumentController, :unarchive
+    resources "/buildings/:building_id/written_documents",
+      WrittenDocumentController,
       except: [:new, :edit]
 
     # Channels (threads per residence)
@@ -166,6 +218,56 @@ defmodule KomunBackendWeb.Router do
     post "/buildings/:building_id/invites", InviteController, :create
     post "/invites/:token/join", InviteController, :join
 
+    # Local feeds (RSS) — read scope (any active member of the residence)
+    get "/residences/:residence_id/rss-feeds", RssFeedController, :index
+    get "/residences/:residence_id/rss-feeds/items", RssFeedController, :items
+
+    # Réservations (V1 = places de recharge gratuites). Création réservée
+    # aux membres actifs du bâtiment (vérifié dans le controller).
+    get    "/buildings/:building_id/charging-spots", ReservationController, :list_charging_spots
+    get    "/lots/:lot_id/reservations",             ReservationController, :list_for_lot
+    post   "/lots/:lot_id/reservations",             ReservationController, :create
+    get    "/me/reservations",                       ReservationController, :list_mine
+    delete "/reservations/:id",                      ReservationController, :cancel
+
+    # Stripe Connect — onboarding du proprio (Phase 2)
+    post   "/me/stripe-connect/onboarding", StripeConnectController, :start_onboarding
+    get    "/me/stripe-connect/status",     StripeConnectController, :status
+    post   "/me/stripe-connect/refresh",    StripeConnectController, :refresh
+
+    # Marketplace location de places (Phase 2)
+    get    "/buildings/:building_id/rental-spots", RentalController, :list_rental_spots
+    patch  "/lots/:id/rental",                     RentalController, :update_lot_rental
+    put    "/lots/:id/rental",                     RentalController, :update_lot_rental
+    post   "/lots/:lot_id/rent",                   RentalController, :rent
+    get    "/me/rentals",                          RentalController, :list_mine
+    get    "/me/owner-payouts",                    RentalController, :list_payouts
+
+    # Floor map — cartographie des logements pour notifications voisinage.
+    # Lecture : syndic + CS. Édition de l'adjacence : syndic + super_admin.
+    # Le gating fin est dans le controller (cf. @read_roles / @edit_roles).
+    get   "/buildings/:building_id/floor-map", FloorMapController, :show
+    patch "/lots/:id/adjacency",               FloorMapController, :update_adjacency
+    put   "/lots/:id/adjacency",               FloorMapController, :update_adjacency
+    get   "/lots/:id/notify-preview",          FloorMapController, :notify_preview
+  end
+
+  # Webhook Stripe — endpoint public (signature vérifiée dans le controller).
+  scope "/api/v1", KomunBackendWeb do
+    pipe_through :api
+    post "/webhooks/stripe", StripeWebhookController, :handle
+  end
+
+  # ── Local feeds (RSS) — admin scope ──────────────────────────────────────
+  # CS members + super_admin can configure feeds for a residence.
+  scope "/api/v1", KomunBackendWeb do
+    pipe_through [:authenticated, KomunBackendWeb.Plugs.RequireResidenceAdmin]
+
+    post   "/residences/:residence_id/rss-feeds",             RssFeedController, :create
+    patch  "/residences/:residence_id/rss-feeds/:id",         RssFeedController, :update
+    put    "/residences/:residence_id/rss-feeds/:id",         RssFeedController, :update
+    delete "/residences/:residence_id/rss-feeds/:id",         RssFeedController, :delete
+    post   "/residences/:residence_id/rss-feeds/:id/refresh", RssFeedController, :refresh
   end
 
   # ── Dev login (guarded by ALLOW_DEV_LOGIN env var at runtime) ────────────

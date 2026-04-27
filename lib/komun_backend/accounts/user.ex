@@ -27,6 +27,16 @@ defmodule KomunBackend.Accounts.User do
     field :apartment_number, :string
     field :floor, :integer
 
+    # Stripe Connect (Express) — chaque copro propriétaire qui souhaite
+    # louer sa place reçoit son propre compte connecté. nil tant que
+    # l'onboarding Stripe n'a pas été lancé. Ne pas exposer dans les
+    # JSON destinés aux autres voisins.
+    field :stripe_connect_account_id, :string
+    field :stripe_connect_onboarded_at, :utc_datetime
+    field :stripe_connect_status, Ecto.Enum,
+      values: [:none, :pending, :verified, :rejected],
+      default: :none
+
     belongs_to :organization, KomunBackend.Organizations.Organization
 
     timestamps(type: :utc_datetime)
@@ -36,7 +46,9 @@ defmodule KomunBackend.Accounts.User do
     user
     |> cast(attrs, [:email, :role, :first_name, :last_name, :phone, :avatar_url,
                     :locale, :push_tokens, :organization_id,
-                    :status, :apartment_number, :floor])
+                    :status, :apartment_number, :floor,
+                    :stripe_connect_account_id, :stripe_connect_onboarded_at,
+                    :stripe_connect_status])
     |> validate_required([:email])
     |> validate_format(:email, ~r/^[^\s]+@[^\s]+$/, message: "must be a valid email")
     |> validate_length(:email, max: 160)

@@ -29,6 +29,11 @@ defmodule KomunBackend.Incidents.Incident do
     #                   qu'aux rôles privilégiés.
     field :visibility, Ecto.Enum, values: [:standard, :council_only], default: :standard
 
+    # Sous-type optionnel — détermine si une notification ciblée est envoyée
+    # aux voisins concernés (logement en dessous pour :water_leak, voisins
+    # de palier pour :noise). nil = pas de routage spécifique.
+    field :subtype, Ecto.Enum, values: [:water_leak, :noise, :other]
+
     # AI triage — populated asynchronously after creation. Residents see it
     # as "réponse proposée par l'assistant" until the syndic / conseil
     # confirms it (ai_answer_confirmed_at set).
@@ -51,7 +56,7 @@ defmodule KomunBackend.Incidents.Incident do
     incident
     |> cast(attrs, [:title, :description, :category, :severity, :status,
                     :photo_urls, :location, :lot_number, :building_id, :reporter_id,
-                    :assignee_id, :resolution_note, :visibility,
+                    :assignee_id, :resolution_note, :visibility, :subtype,
                     :ai_answer, :ai_answered_at, :ai_model,
                     :ai_answer_confirmed_at, :ai_answer_confirmed_by_id])
     |> validate_required([:title, :description, :category, :building_id, :reporter_id])

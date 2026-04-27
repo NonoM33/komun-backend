@@ -17,7 +17,9 @@ defmodule KomunBackend.MixProject do
   def application do
     [
       mod: {KomunBackend.Application, []},
-      extra_applications: [:logger, :runtime_tools]
+      # `:inets` est utilisé par `:httpd_util.convert_request_date/1` dans
+      # `KomunBackend.LocalFeeds.Parser` (parsing des dates RFC 1123 RSS).
+      extra_applications: [:logger, :runtime_tools, :inets]
     ]
   end
 

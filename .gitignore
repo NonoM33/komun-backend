@@ -31,3 +31,7 @@ komun_backend-*.tar
 .env.staging
 .env.prod
 
+# Runtime uploads — fichiers utilisateurs (documents, diligences…),
+# servis depuis priv/static/ mais jamais versionnés.
+/priv/static/uploads/
+
