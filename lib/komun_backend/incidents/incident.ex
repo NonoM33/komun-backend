@@ -42,12 +42,26 @@ defmodule KomunBackend.Incidents.Incident do
     field :ai_model, :string
     field :ai_answer_confirmed_at, :utc_datetime
 
+    # Suivi des dossiers ouverts auprès du syndic — on dénormalise des
+    # compteurs pour pouvoir trier la liste "Dossiers en cours" en SQL
+    # plutôt que de tout charger en mémoire pour calculer.
+    # `last_action_at` = dernier mouvement significatif (créé, status,
+    # follow_up, action syndic). Sert de clé de tri "le plus en attente
+    # d'abord". Initialisé à `inserted_at` au backfill.
+    field :last_follow_up_at, :utc_datetime
+    field :last_action_at, :utc_datetime
+    field :follow_up_count, :integer, default: 0
+
     belongs_to :building, KomunBackend.Buildings.Building
     belongs_to :reporter, KomunBackend.Accounts.User, foreign_key: :reporter_id
     belongs_to :assignee, KomunBackend.Accounts.User, foreign_key: :assignee_id
     belongs_to :ai_answer_confirmed_by, KomunBackend.Accounts.User,
       foreign_key: :ai_answer_confirmed_by_id
+    belongs_to :linked_doleance, KomunBackend.Doleances.Doleance,
+      foreign_key: :linked_doleance_id
     has_many :comments, KomunBackend.Incidents.IncidentComment
+    has_many :events, KomunBackend.Incidents.IncidentEvent,
+      preload_order: [asc: :inserted_at]
 
     timestamps(type: :utc_datetime)
   end
@@ -58,7 +72,9 @@ defmodule KomunBackend.Incidents.Incident do
                     :photo_urls, :location, :lot_number, :building_id, :reporter_id,
                     :assignee_id, :resolution_note, :visibility, :subtype,
                     :ai_answer, :ai_answered_at, :ai_model,
-                    :ai_answer_confirmed_at, :ai_answer_confirmed_by_id])
+                    :ai_answer_confirmed_at, :ai_answer_confirmed_by_id,
+                    :last_follow_up_at, :last_action_at, :follow_up_count,
+                    :linked_doleance_id])
     |> validate_required([:title, :description, :category, :building_id, :reporter_id])
     |> validate_length(:title, min: 5, max: 200)
   end
