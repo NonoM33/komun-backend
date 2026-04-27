@@ -9,6 +9,7 @@ defmodule KomunBackend.InboundEmails do
   alias KomunBackend.{Incidents, Repo}
   alias KomunBackend.AI.IncidentRouter
   alias KomunBackend.Accounts.User
+  alias KomunBackend.Incidents.Incident
 
   @doc "Récupère un super_admin pour porter les commentaires système."
   def system_author do
@@ -53,7 +54,7 @@ defmodule KomunBackend.InboundEmails do
   """
   def route_email(building_id, author_id, email)
       when is_binary(building_id) and is_binary(author_id) do
-    open_incidents = Incidents.list_open_incidents(building_id)
+    open_incidents = list_open_incidents(building_id)
 
     case IncidentRouter.route(email, open_incidents) do
       {:append, incident_id} ->
@@ -123,5 +124,20 @@ defmodule KomunBackend.InboundEmails do
 
   defp ensure_min_length(s, fallback) do
     if String.length(s) >= 5, do: s, else: fallback
+  end
+
+  # Incidents "ouverts" (open + in_progress) d'un bâtiment, juste les
+  # champs dont l'IncidentRouter a besoin (id/title/severity/résumé).
+  # On évite Incidents.list_incidents/3 qui preload tout l'agrégat
+  # (reporter / assignee / comments) — on n'en a pas besoin ici, et
+  # ça serait du gaspillage en runtime.
+  defp list_open_incidents(building_id) do
+    import Ecto.Query
+
+    Repo.all(
+      from i in Incident,
+        where: i.building_id == ^building_id and i.status in [:open, :in_progress],
+        order_by: [desc: i.inserted_at]
+    )
   end
 end
