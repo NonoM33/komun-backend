@@ -8,11 +8,15 @@ defmodule KomunBackendWeb.BattleControllerTest do
 
   use KomunBackendWeb.ConnCase, async: false
 
-  alias KomunBackend.{Buildings, Repo, Residences}
+  import Ecto.Query
+
+  alias KomunBackend.{Battles, Buildings, Repo, Residences}
   alias KomunBackend.Accounts.User
   alias KomunBackend.Auth.Guardian
+  alias KomunBackend.Battles.Battle
   alias KomunBackend.Buildings.Building
   alias KomunBackend.Residences.Residence
+  alias KomunBackend.Votes.{Vote, VoteOption, VoteResponse}
 
   defp insert_residence! do
     {:ok, r} =
@@ -200,5 +204,91 @@ defmodule KomunBackendWeb.BattleControllerTest do
     # un bug latent (`require_privileged/1` renvoie `{:error, :unauthorized}`
     # qui n'est pas géré par le `with` et fait crasher l'action au lieu
     # de renvoyer un 403). Sujet orthogonal au bug multipart corrigé ici.
+  end
+
+  describe "DELETE /api/v1/buildings/:bid/battles/:id" do
+    # Création d'une battle complète via le contexte (round 1 + 2 options
+    # + 1 vote_response) — c'est ce qu'on cherche à voir disparaître après
+    # un DELETE admin. On fait passer la création par `Battles.create_battle/3`
+    # pour garder le même chemin que la prod (insertion + scheduling Oban).
+    defp create_battle_with_response!(building, creator, voter) do
+      {:ok, battle} =
+        Battles.create_battle(building.id, creator.id, %{
+          "title" => "Vote canapé hall",
+          "options" => [
+            %{"label" => "Velours vert"},
+            %{"label" => "Cuir camel"}
+          ]
+        })
+
+      [vote] = Repo.all(from v in Vote, where: v.battle_id == ^battle.id)
+      [opt | _] = Repo.all(from o in VoteOption, where: o.vote_id == ^vote.id)
+
+      {:ok, _} =
+        %VoteResponse{}
+        |> VoteResponse.changeset(%{
+          vote_id: vote.id,
+          user_id: voter.id,
+          option_id: opt.id
+        })
+        |> Repo.insert()
+
+      battle
+    end
+
+    test "supprime la battle, ses votes et leurs réponses (admin)", %{conn: conn} do
+      {building, admin} = setup_with_privileged()
+      voter = insert_user!(:coproprietaire)
+      {:ok, _} = Buildings.add_member(building.id, voter.id, :coproprietaire)
+
+      battle = create_battle_with_response!(building, admin, voter)
+
+      conn =
+        conn
+        |> authed(admin)
+        |> delete(~p"/api/v1/buildings/#{building.id}/battles/#{battle.id}")
+
+      assert response(conn, 204)
+
+      # Battle effacée + cascade vers Vote + VoteOption + VoteResponse.
+      refute Repo.get(Battle, battle.id)
+      assert Repo.aggregate(from(v in Vote, where: v.battle_id == ^battle.id), :count) == 0
+    end
+
+    test "404 si la battle n'appartient pas au bâtiment de l'URL", %{conn: conn} do
+      # Garantit qu'on ne peut pas effacer la battle du bâtiment voisin
+      # juste en swappant le `building_id` dans l'URL.
+      {building_a, admin} = setup_with_privileged()
+
+      residence_b = insert_residence!()
+      building_b = insert_building!(residence_b)
+      {:ok, _} = Buildings.add_member(building_b.id, admin.id, :president_cs)
+
+      battle = create_battle_with_response!(building_b, admin, admin)
+
+      conn =
+        conn
+        |> authed(admin)
+        |> delete(~p"/api/v1/buildings/#{building_a.id}/battles/#{battle.id}")
+
+      assert json_response(conn, 404)
+      assert Repo.get(Battle, battle.id)
+    end
+
+    test "403 pour un copropriétaire non privilégié", %{conn: conn} do
+      {building, admin} = setup_with_privileged()
+      battle = create_battle_with_response!(building, admin, admin)
+
+      resident = insert_user!(:coproprietaire)
+      {:ok, _} = Buildings.add_member(building.id, resident.id, :coproprietaire)
+
+      conn =
+        conn
+        |> authed(resident)
+        |> delete(~p"/api/v1/buildings/#{building.id}/battles/#{battle.id}")
+
+      assert json_response(conn, 403)
+      assert Repo.get(Battle, battle.id)
+    end
   end
 end
