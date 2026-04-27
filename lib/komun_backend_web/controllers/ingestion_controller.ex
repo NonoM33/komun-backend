@@ -86,11 +86,12 @@ defmodule KomunBackendWeb.IngestionController do
   defp ingest_eml(building_id, author_id, %Plug.Upload{filename: filename, path: path}) do
     raw = File.read!(path)
     email = EmlParser.parse(raw)
+    attachments = EmlParser.extract_attachments(raw)
 
     if is_nil(email.from) or email.from == "" do
       %{filename: filename, status: "error", error: "Email illisible (champ `from` introuvable)"}
     else
-      do_route(filename, building_id, author_id, email)
+      do_route(filename, building_id, author_id, email, attachments)
     end
   end
 
@@ -115,7 +116,7 @@ defmodule KomunBackendWeb.IngestionController do
               build_fallback_email(filename, url)
           end
 
-        do_route(filename, building_id, author_id, email)
+        do_route(filename, building_id, author_id, email, [])
 
       {:error, reason} ->
         %{filename: filename, status: "error", error: "Échec sauvegarde : " <> inspect(reason)}
@@ -158,10 +159,16 @@ defmodule KomunBackendWeb.IngestionController do
     }
   end
 
-  defp do_route(filename, building_id, author_id, email) do
-    case InboundEmails.ingest_email(building_id, author_id, email) do
-      {:ok, %{action: :create, incident_id: id}} ->
-        %{filename: filename, status: "ok", action: "create", incident_id: id}
+  defp do_route(filename, building_id, author_id, email, attachments) do
+    case InboundEmails.ingest_email(building_id, author_id, email, attachments) do
+      {:ok, %{action: action, incident_id: id} = info} ->
+        %{
+          filename: filename,
+          status: "ok",
+          action: to_string(action),
+          incident_id: id,
+          attachments_count: Map.get(info, :attachments_count, 0)
+        }
 
       {:error, reason} ->
         %{filename: filename, status: "error", error: inspect(reason)}

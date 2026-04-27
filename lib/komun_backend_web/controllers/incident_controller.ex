@@ -2,15 +2,13 @@ defmodule KomunBackendWeb.IncidentController do
   use KomunBackendWeb, :controller
 
   alias KomunBackend.{Buildings, Incidents}
-  alias KomunBackend.Incidents.IncidentFile
+  alias KomunBackend.Incidents.{IncidentFile, LocalStorage}
   alias KomunBackend.Auth.Guardian
 
-  # Mêmes bornes que les diligences pour rester cohérent : 15 Mo et la
-  # liste de mime-types qu'on accepte côté pièces justificatives. Si un
-  # type doit être ajouté plus tard (ex. heif, mp4), c'est ici.
-  @max_upload_bytes 15 * 1024 * 1024
-  @allowed_mime_types ~w(application/pdf image/jpeg image/png image/heic image/webp)
-  @photo_mime_types ~w(image/jpeg image/png image/heic image/webp)
+  # Bornes mime / taille et helper `infer_kind/2` partagés avec le pipeline
+  # d'ingestion d'emails (cf. `KomunBackend.Incidents.LocalStorage`). Ne
+  # PAS dupliquer la liste ici : si on doit ajouter un type, c'est dans
+  # `LocalStorage`.
 
   # GET /api/v1/buildings/:building_id/incidents
   def index(conn, %{"building_id" => building_id} = params) do
@@ -196,7 +194,7 @@ defmodule KomunBackendWeb.IncidentController do
         |> json(%{error: "Fichier requis (multipart \"file\")"})
         |> halt()
 
-      upload.content_type not in @allowed_mime_types ->
+      upload.content_type not in LocalStorage.allowed_mime_types() ->
         conn
         |> put_status(:unprocessable_entity)
         |> json(%{
@@ -204,20 +202,20 @@ defmodule KomunBackendWeb.IncidentController do
         })
         |> halt()
 
-      file_size(upload.path) > @max_upload_bytes ->
+      file_size(upload.path) > LocalStorage.max_upload_bytes() ->
         conn
         |> put_status(:unprocessable_entity)
-        |> json(%{error: "Fichier trop volumineux (max #{@max_upload_bytes} octets)"})
+        |> json(%{error: "Fichier trop volumineux (max #{LocalStorage.max_upload_bytes()} octets)"})
         |> halt()
 
       true ->
-        case save_upload(upload, incident.id) do
-          {:ok, relative_path} ->
+        case LocalStorage.save_upload(upload, incident.id) do
+          {:ok, %{relative_path: relative_path, size: size}} ->
             attrs = %{
-              "kind" => infer_kind(params["kind"], upload.content_type),
+              "kind" => LocalStorage.infer_kind(params["kind"], upload.content_type),
               "filename" => upload.filename,
               "file_url" => "/" <> relative_path,
-              "file_size_bytes" => file_size(upload.path),
+              "file_size_bytes" => size,
               "mime_type" => upload.content_type
             }
 
@@ -476,29 +474,6 @@ defmodule KomunBackendWeb.IncidentController do
   end
 
   # ── Upload helpers ────────────────────────────────────────────────────────
-  #
-  # Stratégie identique aux diligences : fichiers stockés sur disque dans
-  # `priv/static/uploads/incidents/:incident_id/` pour qu'un `rm -rf` du
-  # dossier soit toujours sûr (purge isolée par incident).
-
-  defp save_upload(%Plug.Upload{filename: filename, path: tmp_path}, incident_id) do
-    ext = Path.extname(filename)
-    unique_name = "#{System.unique_integer([:positive, :monotonic])}#{ext}"
-
-    dest_dir =
-      Application.app_dir(
-        :komun_backend,
-        "priv/static/uploads/incidents/#{incident_id}"
-      )
-
-    File.mkdir_p!(dest_dir)
-    dest_path = Path.join(dest_dir, unique_name)
-
-    case File.cp(tmp_path, dest_path) do
-      :ok -> {:ok, "uploads/incidents/#{incident_id}/#{unique_name}"}
-      {:error, reason} -> {:error, reason}
-    end
-  end
 
   defp file_size(path) do
     case File.stat(path) do
@@ -506,17 +481,6 @@ defmodule KomunBackendWeb.IncidentController do
       _ -> nil
     end
   end
-
-  # Si le client envoie un `kind` valide on le respecte. Sinon on déduit
-  # depuis le mime — image/* → photo, le reste → document. Ça évite de
-  # forcer le front à envoyer le kind quand l'auto-détection suffit.
-  defp infer_kind(kind, _mime) when kind in ["photo", "document"], do: kind
-
-  defp infer_kind(_, mime) when is_binary(mime) do
-    if mime in @photo_mime_types, do: "photo", else: "document"
-  end
-
-  defp infer_kind(_, _), do: "document"
 
   # Best-effort : pas grave si on n'arrive pas à effacer le fichier sur
   # disque (déjà parti, chemin malformé…). La ligne DB est, elle, bien
