@@ -32,6 +32,7 @@ RUN mix release
 FROM debian:bookworm-slim AS app
 
 RUN apt-get update -y && apt-get install -y libstdc++6 openssl libncurses5 locales curl \
+    poppler-utils tesseract-ocr tesseract-ocr-fra \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
 
 RUN sed -i '/en_US.UTF-8/s/^# //g' /etc/locale.gen && locale-gen
