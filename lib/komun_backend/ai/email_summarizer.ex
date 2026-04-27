@@ -67,7 +67,14 @@ defmodule KomunBackend.AI.EmailSummarizer do
         %{role: :user, content: text}
       ]
 
-      case Groq.complete(messages, temperature: 0.2, max_tokens: 600) do
+      # Kimi (moonshotai/kimi-k2-instruct) pour cette tâche : meilleurs
+      # résumés multilingue/français que gpt-oss-120b sur des emails de
+      # copro avec fil de discussion long et signatures bruyantes.
+      case Groq.complete(messages,
+             model: "moonshotai/kimi-k2-instruct",
+             temperature: 0.2,
+             max_tokens: 600
+           ) do
         {:ok, %{content: raw}} ->
           parse(raw)
 
