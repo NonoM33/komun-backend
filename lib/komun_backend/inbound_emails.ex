@@ -30,7 +30,8 @@ defmodule KomunBackend.InboundEmails do
 
   alias KomunBackend.{Incidents, Repo}
   alias KomunBackend.Accounts.User
-  alias KomunBackend.AI.EmailSummarizer
+  alias KomunBackend.Incidents.Incident
+  alias KomunBackend.AI.{EmailSummarizer, IncidentRouter}
 
   @doc "Récupère un super_admin pour porter les commentaires système."
   def system_author do
@@ -73,17 +74,59 @@ defmodule KomunBackend.InboundEmails do
   end
 
   @doc """
-  Crée un incident à partir d'un email :
-    * `incident.description` = résumé Groq anonyme (visible voisins)
-    * 1er commentaire 📧 = contenu brut intégral (redacté côté lecture
-      pour les non-privilégiés)
+  Ingère un email :
+
+    1. Demande au routeur AI (`IncidentRouter.route/2`) si l'email
+       continue un dossier ouvert ou doit créer un nouveau.
+    2. Si append → ajoute un commentaire 📧 brut au dossier.
+    3. Si create → nouvel incident avec :
+        * `incident.description` = résumé Groq anonyme (visible voisins)
+        * 1er commentaire 📧 = contenu brut intégral
+
+    Le redact côté `IncidentController.comment_json/2` masque le brut
+    aux non-privilégiés à la lecture.
+
+  Renvoie `{:ok, %{action: :append|:create, incident_id, comment_id?}}`
+  ou `{:error, reason}`.
   """
   def ingest_email(building_id, author_id, email)
       when is_binary(building_id) and is_binary(author_id) do
-    case create_incident_from_email(building_id, author_id, email) do
-      {:ok, incident} -> {:ok, %{action: :create, incident_id: incident.id}}
-      {:error, reason} -> {:error, reason}
+    open_incidents = list_open_incidents(building_id)
+
+    case IncidentRouter.route(email, open_incidents) do
+      {:append, incident_id} ->
+        append_email_to_incident(incident_id, author_id, email)
+
+      :create ->
+        case create_incident_from_email(building_id, author_id, email) do
+          {:ok, incident} -> {:ok, %{action: :create, incident_id: incident.id}}
+          {:error, reason} -> {:error, reason}
+        end
     end
+  end
+
+  defp append_email_to_incident(incident_id, author_id, email) do
+    case Incidents.add_comment(incident_id, author_id, %{"body" => format_email_body(email)}) do
+      {:ok, comment} ->
+        {:ok, %{action: :append, incident_id: incident_id, comment_id: comment.id}}
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  # Incidents `:open` + `:in_progress` du building. Pas de preload —
+  # le routeur AI a juste besoin de id/title/severity/micro_summary/
+  # description.
+  defp list_open_incidents(building_id) do
+    import Ecto.Query
+
+    Repo.all(
+      from i in Incident,
+        where: i.building_id == ^building_id and i.status in [:open, :in_progress],
+        order_by: [desc: i.inserted_at],
+        limit: 50
+    )
   end
 
   defp create_incident_from_email(building_id, author_id, email) do
