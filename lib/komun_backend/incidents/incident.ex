@@ -15,6 +15,13 @@ defmodule KomunBackend.Incidents.Incident do
     field :status, Ecto.Enum,
       values: [:open, :in_progress, :resolved, :closed, :rejected], default: :open
     field :photo_urls, {:array, :string}, default: []
+
+    # Résumé ultra-court (~ 1 phrase, ≤ 200 chars) généré par l'IA après
+    # création / mise à jour. Utilisé par `IncidentRouter.format_incident/1`
+    # pour donner au LLM un contexte compact des dossiers ouverts. Nil tant
+    # que `IncidentSummarizer` n'a pas tourné — fallback sur la description.
+    field :micro_summary, :string
+
     field :resolved_at, :utc_datetime
     field :resolution_note, :string
     field :location, :string
@@ -59,7 +66,8 @@ defmodule KomunBackend.Incidents.Incident do
                     :photo_urls, :location, :lot_number, :building_id, :reporter_id,
                     :assignee_id, :resolution_note, :visibility, :subtype,
                     :ai_answer, :ai_answered_at, :ai_model,
-                    :ai_answer_confirmed_at, :ai_answer_confirmed_by_id])
+                    :ai_answer_confirmed_at, :ai_answer_confirmed_by_id,
+                    :micro_summary])
     |> validate_required([:title, :description, :category, :building_id, :reporter_id])
     |> validate_length(:title, min: 5, max: 200)
   end
