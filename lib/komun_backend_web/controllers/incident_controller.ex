@@ -207,6 +207,7 @@ defmodule KomunBackendWeb.IncidentController do
       id: inc.id,
       title: inc.title,
       description: inc.description,
+      micro_summary: inc.micro_summary,
       category: inc.category,
       severity: inc.severity,
       status: inc.status,
