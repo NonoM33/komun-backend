@@ -13,7 +13,25 @@ defmodule KomunBackend.InboundEmails.EmlParser do
      que le commentaire soit lisible et que la limite des 100 Ko
      côté schema ne soit pas atteinte par des PDF/images encodés
      en base64.
+
+  Pour récupérer les pièces jointes binaires (image, PDF…) — qui ne
+  doivent PAS finir dans le body texte mais bien dans `incident_files`
+  — voir `extract_attachments/1`. Cette fonction parcourt l'arbre
+  MIME, décode base64 / quoted-printable, et renvoie une liste
+  `[%{filename, content_type, bytes}, …]` prête à être stockée via
+  `KomunBackend.Incidents.LocalStorage.save_bytes/3`.
+
+  Implémentation 100 % maison (pas de `:gen_smtp` / iconv) — on
+  cible les emails Gmail / Outlook bien formés que reçoit aujourd'hui
+  le syndic.
   """
+
+  require Logger
+
+  @placeholder_attachment_text "[Pièce jointe encodée — non incluse dans le commentaire pour rester lisible]"
+
+  @doc "Texte injecté dans le body quand on n'arrive pas à isoler la PJ — exposé pour que le pipeline d'ingestion puisse le strip une fois la PJ correctement extraite."
+  def placeholder_attachment_text, do: @placeholder_attachment_text
 
   @doc "Parse une string `.eml` brute. Renvoie une map normalisée."
   @spec parse(String.t()) :: map()
@@ -148,7 +166,7 @@ defmodule KomunBackend.InboundEmails.EmlParser do
   defp decode_transfer(body, encoding) do
     case String.downcase(encoding) do
       "quoted-printable" -> decode_quoted_printable(body)
-      "base64" -> "[Pièce jointe encodée — non incluse dans le commentaire pour rester lisible]"
+      "base64" -> @placeholder_attachment_text
       _ -> body
     end
   end
@@ -216,4 +234,236 @@ defmodule KomunBackend.InboundEmails.EmlParser do
           end)
         end).()
   end
+
+  # ── Attachments extraction ────────────────────────────────────────────
+  #
+  # Le body texte est géré par `parse/1` au-dessus (placeholder, strip
+  # HTML, troncature). Ici on s'occupe **uniquement** des pièces jointes
+  # binaires : on parcourt l'arbre MIME, on collecte les parts qui ont
+  # un `filename` (Content-Disposition ou Content-Type `name=`), et on
+  # décode leurs bytes (base64, quoted-printable). Les parties text/plain
+  # / text/html inline sans filename sont ignorées.
+
+  @doc """
+  Parcourt l'arbre MIME de l'email et renvoie les pièces jointes
+  binaires déjà décodées sous la forme
+  `[%{filename: String.t(), content_type: String.t(), bytes: binary()}, ...]`.
+
+  Si l'email n'est pas multipart, ou si le parsing échoue, renvoie `[]`
+  — l'idée est que cette fonction ne fasse jamais planter le pipeline
+  d'ingestion : pas de PJ extraite, c'est tout, et le placeholder dans
+  le body reste visible pour signaler le manque.
+  """
+  @spec extract_attachments(String.t()) :: [
+          %{filename: String.t(), content_type: String.t(), bytes: binary()}
+        ]
+  def extract_attachments(raw) when is_binary(raw) do
+    raw
+    |> walk_part()
+    |> List.flatten()
+    |> Enum.reject(&is_nil/1)
+  rescue
+    e ->
+      Logger.warning("[eml_parser] extract_attachments failed: #{inspect(e)}")
+      []
+  end
+
+  # Walk a single MIME part. `raw` est soit l'email entier (au premier
+  # appel), soit une sous-part (lors de la récursion). On split
+  # headers/body, on regarde le Content-Type, et on bifurque :
+  #   * multipart/* → on découpe par boundary et on recurse
+  #   * autre       → on tente de l'extraire comme attachment
+  defp walk_part(raw) do
+    {headers_block, body} =
+      case String.split(raw, ~r/\r?\n\r?\n/, parts: 2) do
+        [h, b] -> {h, b}
+        [h] -> {h, ""}
+      end
+
+    headers = parse_headers(headers_block)
+    {ctype, ctype_params} = parse_content_type(headers["content-type"])
+
+    if String.starts_with?(ctype || "", "multipart/") do
+      walk_multipart(body, ctype_params)
+    else
+      [maybe_attachment(headers, body, ctype)]
+    end
+  end
+
+  defp walk_multipart(body, %{"boundary" => boundary}) when is_binary(boundary) do
+    body
+    |> split_by_boundary(boundary)
+    |> Enum.flat_map(&walk_part/1)
+  end
+
+  defp walk_multipart(_body, _params), do: []
+
+  # RFC 2046 §5.1.1 : `--BOUNDARY` ouvre une part, `--BOUNDARY--` ferme
+  # le multipart. Tout ce qui précède la première occurrence est un
+  # préambule à ignorer. On normalise sur LF avant le split puis on
+  # rejoint en CRLF pour rester cohérent avec la grammaire RFC822.
+  defp split_by_boundary(body, boundary) do
+    delim = "--" <> boundary
+    end_delim = delim <> "--"
+
+    body
+    |> String.replace("\r\n", "\n")
+    |> String.split("\n")
+    |> chunk_by_delim(delim, end_delim)
+    |> Enum.map(&Enum.join(&1, "\r\n"))
+  end
+
+  defp chunk_by_delim(lines, delim, end_delim) do
+    {chunks, current, started?} =
+      Enum.reduce(lines, {[], [], false}, fn line, {acc, cur, started?} ->
+        cond do
+          line == end_delim ->
+            if started? and cur != [],
+              do: {[Enum.reverse(cur) | acc], [], false},
+              else: {acc, [], false}
+
+          line == delim ->
+            cond do
+              started? and cur != [] -> {[Enum.reverse(cur) | acc], [], true}
+              true -> {acc, [], true}
+            end
+
+          started? ->
+            {acc, [line | cur], true}
+
+          true ->
+            {acc, cur, started?}
+        end
+      end)
+
+    chunks =
+      if started? and current != [],
+        do: [Enum.reverse(current) | chunks],
+        else: chunks
+
+    Enum.reverse(chunks)
+  end
+
+  defp maybe_attachment(headers, body, ctype) do
+    {disposition, disp_params} = parse_content_disposition(headers["content-disposition"])
+    {_, ctype_params} = parse_content_type(headers["content-type"])
+
+    encoding =
+      headers["content-transfer-encoding"]
+      |> to_string()
+      |> String.downcase()
+      |> String.trim()
+
+    filename =
+      pick_filename(disp_params) ||
+        pick_filename(ctype_params)
+
+    cond do
+      is_nil(filename) ->
+        nil
+
+      disposition not in ["", "attachment", "inline"] ->
+        nil
+
+      true ->
+        bytes = decode_attachment_body(body, encoding)
+
+        if byte_size(bytes) == 0 do
+          nil
+        else
+          %{
+            filename: decode_encoded_words(filename) || filename,
+            content_type: ctype || "application/octet-stream",
+            bytes: bytes
+          }
+        end
+    end
+  end
+
+  defp pick_filename(%{"filename" => f}) when is_binary(f) and f != "", do: f
+  defp pick_filename(%{"name" => f}) when is_binary(f) and f != "", do: f
+  defp pick_filename(_), do: nil
+
+  defp parse_content_type(nil), do: {nil, %{}}
+
+  defp parse_content_type(raw) do
+    [type | params] = String.split(raw, ";")
+    {String.downcase(String.trim(type)), parse_params(params)}
+  end
+
+  defp parse_content_disposition(nil), do: {"", %{}}
+
+  defp parse_content_disposition(raw) do
+    [disp | params] = String.split(raw, ";")
+    {String.downcase(String.trim(disp)), parse_params(params)}
+  end
+
+  # `name="..."`, `filename=...`, `filename*=UTF-8''Naïve.pdf` (RFC 2231).
+  # On reste pragmatique : on ne gère pas la continuation `filename*0=
+  # …; filename*1=…` mais on couvre le cas `filename*=UTF-8''xxx` qui
+  # est ce qu'envoie Gmail / Outlook 99 % du temps.
+  defp parse_params(parts) do
+    Enum.reduce(parts, %{}, fn part, acc ->
+      case String.split(part, "=", parts: 2) do
+        [k, v] ->
+          key = k |> String.trim() |> String.downcase()
+          value = v |> String.trim() |> unquote_string()
+
+          if String.ends_with?(key, "*") do
+            base = String.trim_trailing(key, "*")
+            Map.put(acc, base, decode_rfc2231(value))
+          else
+            Map.put_new(acc, key, value)
+          end
+
+        _ ->
+          acc
+      end
+    end)
+  end
+
+  defp unquote_string("\"" <> rest) do
+    case String.split(rest, "\"", parts: 2) do
+      [inner, _] -> inner
+      [v] -> v
+    end
+  end
+
+  defp unquote_string(s), do: s
+
+  defp decode_rfc2231(value) do
+    case String.split(value, "'", parts: 3) do
+      [_charset, _lang, encoded] -> percent_decode(encoded)
+      _ -> percent_decode(value)
+    end
+  end
+
+  defp percent_decode(s) do
+    Regex.replace(~r/%([0-9A-Fa-f]{2})/, s, fn _, hex ->
+      <<String.to_integer(hex, 16)>>
+    end)
+  end
+
+  defp decode_attachment_body(body, "base64") do
+    body
+    |> String.replace(~r/\s+/, "")
+    |> Base.decode64(ignore: :whitespace)
+    |> case do
+      {:ok, bin} -> bin
+      :error -> ""
+    end
+  end
+
+  defp decode_attachment_body(body, "quoted-printable") do
+    body
+    |> decode_quoted_printable()
+    # `decode_quoted_printable/1` peut renvoyer la string brute en cas
+    # de rescue — on s'assure que le résultat est bien un binaire.
+    |> case do
+      b when is_binary(b) -> b
+      _ -> ""
+    end
+  end
+
+  defp decode_attachment_body(body, _), do: body
 end
