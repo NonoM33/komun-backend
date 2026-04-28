@@ -280,9 +280,11 @@ defmodule KomunBackendWeb.Router do
     # Ressource globale, pas scopée à un bâtiment : c'est du retour
     # à l'équipe Komun. L'auteur ne voit que ses propres tickets ;
     # les super_admin passent par /admin/improvement_tickets.
-    get  "/improvement_tickets",     ImprovementTicketController, :index
-    get  "/improvement_tickets/:id", ImprovementTicketController, :show
-    post "/improvement_tickets",     ImprovementTicketController, :create
+    get    "/improvement_tickets",                  ImprovementTicketController, :index
+    get    "/improvement_tickets/:id",              ImprovementTicketController, :show
+    post   "/improvement_tickets",                  ImprovementTicketController, :create
+    post   "/improvement_tickets/:id/screenshots",  ImprovementTicketController, :upload_screenshot
+    delete "/improvement_tickets/:id/screenshots",  ImprovementTicketController, :delete_screenshot
   end
 
   # Webhook Stripe — endpoint public (signature vérifiée dans le controller).

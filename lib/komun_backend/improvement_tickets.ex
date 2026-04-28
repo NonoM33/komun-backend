@@ -91,4 +91,38 @@ defmodule KomunBackend.ImprovementTickets do
 
   defp maybe_put(map, _key, nil), do: map
   defp maybe_put(map, key, value), do: Map.put(map, key, value)
+
+  @doc """
+  Ajoute une URL de capture d'écran au ticket. On garde la liste à
+  plat — pas de métadonnées par capture (filename, taille, mime) car
+  l'usage est purement illustratif.
+  """
+  def append_screenshot(%ImprovementTicket{} = ticket, url) when is_binary(url) do
+    new_urls = (ticket.screenshot_urls || []) ++ [url]
+
+    ticket
+    |> ImprovementTicket.screenshots_changeset(new_urls)
+    |> Repo.update()
+    |> case do
+      {:ok, t} -> {:ok, Repo.preload(t, [:author, :building])}
+      err -> err
+    end
+  end
+
+  @doc """
+  Retire une URL de la liste. No-op si l'URL n'est pas dans le tableau —
+  on ne crash pas pour ça (le client a peut-être supprimé la même
+  capture deux fois en double-tap).
+  """
+  def remove_screenshot(%ImprovementTicket{} = ticket, url) when is_binary(url) do
+    new_urls = Enum.reject(ticket.screenshot_urls || [], &(&1 == url))
+
+    ticket
+    |> ImprovementTicket.screenshots_changeset(new_urls)
+    |> Repo.update()
+    |> case do
+      {:ok, t} -> {:ok, Repo.preload(t, [:author, :building])}
+      err -> err
+    end
+  end
 end
