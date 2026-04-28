@@ -440,4 +440,150 @@ defmodule KomunBackendWeb.FloorMapControllerTest do
       assert Repo.get(Lot, lot.id)
     end
   end
+
+  describe "DELETE /buildings/:b/floors/:floor" do
+    test "le syndic supprime tous les lots d'un étage et la réponse rejoue /floor-map",
+         %{conn: conn} do
+      r = insert_residence!()
+      b = insert_building!(r)
+      _ = insert_lot!(b, %{number: "1001", floor: 1})
+      _ = insert_lot!(b, %{number: "1002", floor: 1})
+      kept = insert_lot!(b, %{number: "2001", floor: 2})
+
+      syndic = insert_user!(:syndic_manager)
+
+      body =
+        conn
+        |> authed(syndic)
+        |> delete(~p"/api/v1/buildings/#{b.id}/floors/1")
+        |> json_response(200)
+
+      assert [%{"floor" => 2, "lots" => f2}] = body["data"]
+      assert [%{"id" => id}] = f2
+      assert id == kept.id
+
+      assert Repo.aggregate(from(l in Lot, where: l.building_id == ^b.id), :count) == 1
+    end
+
+    test "rince les neighbor_lot_ids des lots restants qui pointaient vers cet étage",
+         %{conn: conn} do
+      r = insert_residence!()
+      b = insert_building!(r)
+      lot_floor1_a = insert_lot!(b, %{number: "1001", floor: 1})
+      lot_floor1_b = insert_lot!(b, %{number: "1002", floor: 1})
+      lot_floor2 = insert_lot!(b, %{number: "2001", floor: 2})
+
+      lot_floor2
+      |> Ecto.Changeset.change(neighbor_lot_ids: [lot_floor1_a.id, lot_floor1_b.id])
+      |> Repo.update!()
+
+      syndic = insert_user!(:syndic_manager)
+
+      conn
+      |> authed(syndic)
+      |> delete(~p"/api/v1/buildings/#{b.id}/floors/1")
+      |> json_response(200)
+
+      assert Repo.get(Lot, lot_floor2.id).neighbor_lot_ids == []
+    end
+
+    test "200 idempotent même si l'étage n'existe pas", %{conn: conn} do
+      r = insert_residence!()
+      b = insert_building!(r)
+      _ = insert_lot!(b, %{number: "1001", floor: 1})
+
+      syndic = insert_user!(:syndic_manager)
+
+      body =
+        conn
+        |> authed(syndic)
+        |> delete(~p"/api/v1/buildings/#{b.id}/floors/9")
+        |> json_response(200)
+
+      assert [%{"floor" => 1}] = body["data"]
+    end
+
+    test "400 sur étage non numérique", %{conn: conn} do
+      r = insert_residence!()
+      b = insert_building!(r)
+      syndic = insert_user!(:syndic_manager)
+
+      assert conn
+             |> authed(syndic)
+             |> delete(~p"/api/v1/buildings/#{b.id}/floors/abc")
+             |> json_response(400)
+    end
+
+    test "403 pour un membre du CS", %{conn: conn} do
+      r = insert_residence!()
+      b = insert_building!(r)
+      _ = insert_lot!(b, %{number: "1001", floor: 1})
+      user = insert_user!()
+      {:ok, _} = Buildings.add_member(b.id, user.id, :membre_cs)
+
+      assert conn
+             |> authed(user)
+             |> delete(~p"/api/v1/buildings/#{b.id}/floors/1")
+             |> json_response(403)
+
+      assert Repo.aggregate(from(l in Lot, where: l.building_id == ^b.id), :count) == 1
+    end
+  end
+
+  describe "DELETE /buildings/:b/lots (reset complet)" do
+    test "le syndic vide la cartographie et /floor-map renvoie une liste vide",
+         %{conn: conn} do
+      r = insert_residence!()
+      b = insert_building!(r)
+      _ = insert_lot!(b, %{number: "1001", floor: 1})
+      _ = insert_lot!(b, %{number: "2001", floor: 2})
+
+      syndic = insert_user!(:syndic_manager)
+
+      body =
+        conn
+        |> authed(syndic)
+        |> delete(~p"/api/v1/buildings/#{b.id}/lots")
+        |> json_response(200)
+
+      assert body["data"] == []
+      assert Repo.aggregate(from(l in Lot, where: l.building_id == ^b.id), :count) == 0
+    end
+
+    test "permet de re-générer un grid après le reset", %{conn: conn} do
+      r = insert_residence!()
+      b = insert_building!(r)
+      _ = insert_lot!(b, %{number: "1001", floor: 1})
+
+      syndic = insert_user!(:syndic_manager)
+
+      conn
+      |> authed(syndic)
+      |> delete(~p"/api/v1/buildings/#{b.id}/lots")
+      |> json_response(200)
+
+      # Après reset, generate_lots ne renvoie plus :lots_already_exist.
+      conn
+      |> authed(syndic)
+      |> post(~p"/api/v1/buildings/#{b.id}/lots/generate", %{floors: 1, lots_per_floor: 2})
+      |> json_response(200)
+
+      assert Repo.aggregate(from(l in Lot, where: l.building_id == ^b.id), :count) == 2
+    end
+
+    test "403 pour un membre du CS", %{conn: conn} do
+      r = insert_residence!()
+      b = insert_building!(r)
+      _ = insert_lot!(b, %{number: "1001", floor: 1})
+      user = insert_user!()
+      {:ok, _} = Buildings.add_member(b.id, user.id, :membre_cs)
+
+      assert conn
+             |> authed(user)
+             |> delete(~p"/api/v1/buildings/#{b.id}/lots")
+             |> json_response(403)
+
+      assert Repo.aggregate(from(l in Lot, where: l.building_id == ^b.id), :count) == 1
+    end
+  end
 end
