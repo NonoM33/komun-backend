@@ -530,6 +530,78 @@ defmodule KomunBackendWeb.FloorMapControllerTest do
     end
   end
 
+  describe "PUT /buildings/:b/floors/:floor/label" do
+    test "le syndic pose une étiquette personnalisée et /floor-map la renvoie",
+         %{conn: conn} do
+      r = insert_residence!()
+      b = insert_building!(r)
+      _ = insert_lot!(b, %{number: "1001", floor: 1})
+
+      syndic = insert_user!(:syndic_manager)
+
+      body =
+        conn
+        |> authed(syndic)
+        |> put(~p"/api/v1/buildings/#{b.id}/floors/1/label", %{label: "Niveau commercial"})
+        |> json_response(200)
+
+      assert body["data"] == %{"floor" => 1, "custom_label" => "Niveau commercial"}
+
+      map_body =
+        conn
+        |> authed(syndic)
+        |> get(~p"/api/v1/buildings/#{b.id}/floor-map")
+        |> json_response(200)
+
+      assert [%{"floor" => 1, "custom_label" => "Niveau commercial"}] = map_body["data"]
+    end
+
+    test "label vide ou null retire l'override", %{conn: conn} do
+      r = insert_residence!()
+      b = insert_building!(r)
+      _ = insert_lot!(b, %{number: "1001", floor: 1})
+      syndic = insert_user!(:syndic_manager)
+
+      conn
+      |> authed(syndic)
+      |> put(~p"/api/v1/buildings/#{b.id}/floors/1/label", %{label: "Custom"})
+      |> json_response(200)
+
+      body =
+        conn
+        |> authed(syndic)
+        |> put(~p"/api/v1/buildings/#{b.id}/floors/1/label", %{label: nil})
+        |> json_response(200)
+
+      assert body["data"]["custom_label"] in [nil]
+
+      assert Repo.get!(KomunBackend.Buildings.Building, b.id).floor_labels == %{}
+    end
+
+    test "400 sur étage non numérique", %{conn: conn} do
+      r = insert_residence!()
+      b = insert_building!(r)
+      syndic = insert_user!(:syndic_manager)
+
+      assert conn
+             |> authed(syndic)
+             |> put(~p"/api/v1/buildings/#{b.id}/floors/abc/label", %{label: "x"})
+             |> json_response(400)
+    end
+
+    test "403 pour un membre du CS", %{conn: conn} do
+      r = insert_residence!()
+      b = insert_building!(r)
+      user = insert_user!()
+      {:ok, _} = Buildings.add_member(b.id, user.id, :membre_cs)
+
+      assert conn
+             |> authed(user)
+             |> put(~p"/api/v1/buildings/#{b.id}/floors/1/label", %{label: "x"})
+             |> json_response(403)
+    end
+  end
+
   describe "DELETE /buildings/:b/lots (reset complet)" do
     test "le syndic vide la cartographie et /floor-map renvoie une liste vide",
          %{conn: conn} do

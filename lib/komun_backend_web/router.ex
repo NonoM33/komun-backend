@@ -274,6 +274,7 @@ defmodule KomunBackendWeb.Router do
     post  "/buildings/:building_id/lots/generate", FloorMapController, :generate_lots
     delete "/buildings/:building_id/lots",          FloorMapController, :delete_all_lots
     delete "/buildings/:building_id/floors/:floor", FloorMapController, :delete_floor
+    put    "/buildings/:building_id/floors/:floor/label", FloorMapController, :set_floor_label
     patch "/lots/:id/adjacency",               FloorMapController, :update_adjacency
     put   "/lots/:id/adjacency",               FloorMapController, :update_adjacency
     delete "/lots/:id",                         FloorMapController, :delete
