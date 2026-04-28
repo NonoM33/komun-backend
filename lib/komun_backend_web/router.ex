@@ -46,6 +46,11 @@ defmodule KomunBackendWeb.Router do
     # GDPR consent log — accepts anonymous visitors (visitor_id param)
     # or authenticated users (user_id attached via optional auth).
     post "/consents", ConsentController, :create
+
+    # Webhook Resend Inbound — auth via header `Authorization: Bearer
+    # <RESEND_INBOUND_SECRET>` vérifié dans le controller. Public
+    # parce qu'il vient d'un service externe (Resend), pas d'un user.
+    post "/webhooks/resend/inbound", WebhookController, :resend_inbound
   end
 
   # ── Authenticated routes ──────────────────────────────────────────────────

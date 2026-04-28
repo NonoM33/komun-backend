@@ -18,6 +18,12 @@ defmodule KomunBackend.Buildings.Building do
     field :is_active, :boolean, default: true
     field :join_code, :string
 
+    # Slug pour la pipeline d'ingestion email entrant via Resend.
+    # Adresse cible : `<inbound_alias>@inbound.komun.app`. Slug ASCII
+    # minuscule (lettres, chiffres, tirets), 3-32 chars. Validation
+    # faite dans `validate_inbound_alias/1`.
+    field :inbound_alias, :string
+
     belongs_to :organization, KomunBackend.Organizations.Organization
     belongs_to :residence, KomunBackend.Residences.Residence
     has_many :lots, KomunBackend.Buildings.Lot
@@ -35,7 +41,7 @@ defmodule KomunBackend.Buildings.Building do
   # règle complète. Les seules écritures légitimes du champ passent par
   # `initial_changeset/2` (création d'un bâtiment neuf).
   @edit_fields ~w(name address city postal_code country lot_count construction_year
-                  cover_url settings organization_id residence_id)a
+                  cover_url settings organization_id residence_id inbound_alias)a
 
   @create_fields [:join_code | @edit_fields]
 
@@ -44,6 +50,8 @@ defmodule KomunBackend.Buildings.Building do
     |> cast(attrs, @edit_fields)
     |> validate_required([:name, :address, :city, :postal_code, :residence_id])
     |> validate_number(:construction_year, greater_than: 1800, less_than_or_equal_to: 2030)
+    |> validate_inbound_alias()
+    |> unique_constraint(:inbound_alias)
   end
 
   # Admin changeset — organization_id optional (super_admin creates standalone buildings)
@@ -52,6 +60,8 @@ defmodule KomunBackend.Buildings.Building do
     |> cast(attrs, @edit_fields)
     |> validate_required([:name, :address, :city, :postal_code])
     |> validate_number(:construction_year, greater_than: 1800, less_than_or_equal_to: 2030)
+    |> validate_inbound_alias()
+    |> unique_constraint(:inbound_alias)
   end
 
   @doc """
@@ -63,6 +73,29 @@ defmodule KomunBackend.Buildings.Building do
     |> cast(attrs, @create_fields)
     |> validate_required([:name, :address, :city, :postal_code, :join_code])
     |> validate_number(:construction_year, greater_than: 1800, less_than_or_equal_to: 2030)
+    |> validate_inbound_alias()
     |> unique_constraint(:join_code)
+    |> unique_constraint(:inbound_alias)
+  end
+
+  # Slug ASCII minuscule : lettres, chiffres, tirets ; 3-32 chars.
+  # Pas d'underscore, pas de point — collés à des caractères qui
+  # cassent un local-part email valide selon les implémentations.
+  defp validate_inbound_alias(changeset) do
+    case get_change(changeset, :inbound_alias) do
+      nil ->
+        changeset
+
+      "" ->
+        # Permet de retirer l'alias en posant "" → on stocke nil pour
+        # respecter la contrainte UNIQUE WHERE NOT NULL.
+        put_change(changeset, :inbound_alias, nil)
+
+      _ ->
+        validate_format(changeset, :inbound_alias, ~r/^[a-z0-9-]{3,32}$/,
+          message:
+            "doit être en minuscules ASCII (lettres, chiffres, tirets), 3-32 caractères"
+        )
+    end
   end
 end
