@@ -17,6 +17,7 @@ defmodule KomunBackend.AI.DoleanceDossier do
   require Logger
 
   alias KomunBackend.{AI, Documents, Doleances}
+  alias KomunBackend.AI.LetterFormatter
   alias KomunBackend.Doleances.Doleance
 
   # Budget initial pour une lettre formelle française (faits, fondement
@@ -62,8 +63,24 @@ defmodule KomunBackend.AI.DoleanceDossier do
     une adresse à partir du contexte — si un champ est manquant, omets
     cette ligne plutôt que de la fabriquer.
 
-  Commence directement par la lettre, sans phrase d'introduction, sans
-  bloc markdown.
+  Commence directement par la lettre, sans phrase d'introduction.
+
+  ⚠️ FORMAT — TEXTE BRUT UNIQUEMENT (aucun markdown) :
+
+  - INTERDIT : `**gras**`, `*italique*`, `__gras__`, `_italique_`, `# titres`,
+    `> citations`, blocs `` `code` ``.
+  - Le courrier sera copié tel quel dans un email ou envoyé par l'API
+    La Poste — chaque caractère markdown apparaîtrait littéralement chez
+    le destinataire (« **Fondement juridique** » au lieu de
+    « Fondement juridique » en gras) et fait amateur.
+  - Pour mettre en avant le titre d'une section, utilise des MAJUSCULES
+    suivies d'un saut de ligne (« 1. RAPPEL DES FAITS » plutôt que
+    « **1. Rappel des faits** »). Ou écris-le en casse normale, ça reste
+    un courrier sobre.
+  - Pour les énumérations, utilise « 1. », « 2. », « 3. » ou un tiret
+    cadratin « — ». Pas de puces markdown `-` ou `*`.
+  - Les retours à la ligne et l'indentation suffisent à structurer le
+    texte ; pas besoin de gras pour qu'un syndic comprenne où il en est.
   """
 
   @experts_prompt """
@@ -142,7 +159,9 @@ defmodule KomunBackend.AI.DoleanceDossier do
 
     case complete_letter(messages, @letter_max_tokens) do
       {:ok, %{content: letter, model: model}} ->
-        case Doleances.save_ai_letter(doleance, letter, model, actor_id) do
+        clean_letter = LetterFormatter.to_plain_text(letter)
+
+        case Doleances.save_ai_letter(doleance, clean_letter, model, actor_id) do
           {:ok, updated} -> {:ok, updated}
           error -> error
         end

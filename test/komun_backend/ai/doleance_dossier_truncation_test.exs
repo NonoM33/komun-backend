@@ -113,14 +113,21 @@ defmodule KomunBackend.AI.DoleanceDossierTruncationTest do
   end
 
   describe "generate_letter/3 — protection contre la troncature" do
-    test "retente avec un budget plus large quand la première réponse est tronquée et persiste la lettre complète" do
+    test "retente avec un budget plus large quand la première réponse est tronquée et persiste la lettre complète sans markdown" do
       {user, doleance} = setup_doleance()
 
       truncated_letter =
         "Madame, Monsieur,\n\nNous vous écrivons concernant la voirie. À compter de la"
 
+      # La réponse complète contient du markdown (`**Fondement**`) — c'est
+      # ce que l'IA a tendance à produire malgré le prompt. Le sanitizer
+      # côté backend doit le strip avant persistance pour qu'un copier-coller
+      # vers email / API La Poste reste propre.
       complete_letter =
-        "Madame, Monsieur,\n\nLettre complète, formellement signée.\n\nCordialement."
+        "Madame, Monsieur,\n\n**1. Rappel des faits**\n\nLes trottoirs sont dégradés.\n\nCordialement."
+
+      expected_persisted =
+        "Madame, Monsieur,\n\n1. Rappel des faits\n\nLes trottoirs sont dégradés.\n\nCordialement."
 
       counter = :counters.new(1, [])
 
@@ -137,7 +144,8 @@ defmodule KomunBackend.AI.DoleanceDossierTruncationTest do
       assert {:ok, %Doleance{ai_letter: saved}} =
                DoleanceDossier.generate_letter(doleance, user.id)
 
-      assert saved == complete_letter
+      assert saved == expected_persisted
+      refute String.contains?(saved, "**")
       assert :counters.get(counter, 1) == 2
     end
 
