@@ -13,7 +13,7 @@ defmodule KomunBackend.Incidents.Incident do
                :facades, :parties_communes, :espaces_verts, :autre]
     field :severity, Ecto.Enum, values: [:critical, :high, :medium, :low], default: :medium
     field :status, Ecto.Enum,
-      values: [:open, :in_progress, :resolved, :closed, :rejected], default: :open
+      values: [:brouillon, :open, :in_progress, :resolved, :closed, :rejected], default: :open
     field :photo_urls, {:array, :string}, default: []
 
     # Résumé ultra-court (~ 1 phrase, ≤ 200 chars) généré par l'IA après

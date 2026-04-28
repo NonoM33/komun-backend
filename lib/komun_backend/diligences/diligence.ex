@@ -14,7 +14,7 @@ defmodule KomunBackend.Diligences.Diligence do
   @primary_key {:id, :binary_id, autogenerate: true}
   @foreign_key_type :binary_id
 
-  @statuses [:open, :closed, :escalated]
+  @statuses [:brouillon, :open, :closed, :escalated]
   @source_types [:copro_owner, :tenant, :unknown]
 
   schema "diligences" do
