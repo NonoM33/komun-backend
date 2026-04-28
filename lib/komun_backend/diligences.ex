@@ -55,6 +55,7 @@ defmodule KomunBackend.Diligences do
     )
     |> apply_filter(:status, filters["status"])
     |> apply_filter(:linked_incident_id, filters["linked_incident_id"])
+    |> apply_drafts_visibility(filters)
     |> Repo.all()
   end
 
@@ -64,6 +65,15 @@ defmodule KomunBackend.Diligences do
 
   defp apply_filter(q, :linked_incident_id, v),
     do: where(q, [d], d.linked_incident_id == ^v)
+
+  # Brouillons cachés par défaut.
+  defp apply_drafts_visibility(q, filters) do
+    cond do
+      filters["status"] == "brouillon" -> q
+      filters["include_drafts"] in [true, "true"] -> q
+      true -> where(q, [d], d.status != :brouillon)
+    end
+  end
 
   defp step_order, do: from(s in DiligenceStep, order_by: [asc: s.step_number])
   defp file_order, do: from(f in DiligenceFile, order_by: [desc: f.inserted_at])

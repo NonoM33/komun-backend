@@ -27,7 +27,7 @@ defmodule KomunBackend.Doleances.Doleance do
       default: :medium
 
     field :status, Ecto.Enum,
-      values: [:open, :escalated, :resolved, :closed, :rejected],
+      values: [:brouillon, :open, :escalated, :resolved, :closed, :rejected],
       default: :open
 
     field :photo_urls, {:array, :string}, default: []

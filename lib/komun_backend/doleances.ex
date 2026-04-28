@@ -34,11 +34,21 @@ defmodule KomunBackend.Doleances do
       order_by: [desc: d.inserted_at]
     )
     |> apply_filter(:status, filters["status"])
+    |> apply_drafts_visibility(filters)
     |> Repo.all()
   end
 
   defp apply_filter(q, _field, nil), do: q
   defp apply_filter(q, :status, v), do: where(q, [d], d.status == ^v)
+
+  # Brouillons cachés par défaut.
+  defp apply_drafts_visibility(q, filters) do
+    cond do
+      filters["status"] == "brouillon" -> q
+      filters["include_drafts"] in [true, "true"] -> q
+      true -> where(q, [d], d.status != :brouillon)
+    end
+  end
 
   def get_doleance!(id) do
     Repo.get!(Doleance, id)
