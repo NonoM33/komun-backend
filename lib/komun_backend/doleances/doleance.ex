@@ -38,6 +38,7 @@ defmodule KomunBackend.Doleances.Doleance do
 
     field :target_name, :string
     field :target_email, :string
+    field :target_address, :string
 
     field :ai_letter, :string
     field :ai_letter_generated_at, :utc_datetime
@@ -71,6 +72,7 @@ defmodule KomunBackend.Doleances.Doleance do
       :target_kind,
       :target_name,
       :target_email,
+      :target_address,
       :ai_letter,
       :ai_letter_generated_at,
       :ai_expert_suggestions,

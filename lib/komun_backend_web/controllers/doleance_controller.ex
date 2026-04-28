@@ -111,19 +111,73 @@ defmodule KomunBackendWeb.DoleanceController do
   end
 
   # POST /api/v1/buildings/:building_id/doleances/:id/generate-letter
-  def generate_letter(conn, %{"building_id" => building_id, "doleance_id" => doleance_id}) do
+  #
+  # Body optionnel :
+  #   author_first_name, author_last_name, author_role_label
+  #     → identité du signataire ; reprise littéralement dans la
+  #       signature pour empêcher l'IA d'inventer une fonction.
+  #   target_name, target_email, target_address
+  #     → coordonnées du destinataire ; persistées sur la doléance et
+  #       injectées dans l'en-tête du courrier.
+  #
+  # Le rôle officiel du signataire dans le bâtiment est par ailleurs
+  # **vérifié côté serveur** via `Buildings.get_member_role/2` et passé
+  # en parallèle au prompt — c'est lui la source de vérité, le label
+  # frontend n'est qu'une mention humaine.
+  def generate_letter(conn, %{"building_id" => building_id, "doleance_id" => doleance_id} = params) do
     user = Guardian.Plug.current_resource(conn)
     doleance = Doleances.get_doleance!(doleance_id)
 
     with :ok <- authorize_building(conn, building_id),
-         :ok <- authorize_author_or_privileged(conn, building_id, user, doleance) do
-      case DoleanceDossier.generate_letter(doleance, user.id) do
+         :ok <- authorize_author_or_privileged(conn, building_id, user, doleance),
+         {:ok, doleance} <- maybe_persist_target(doleance, params, user.id) do
+      verified_role = Buildings.get_member_role(building_id, user.id)
+
+      signer = %{
+        first_name:
+          presence(params["author_first_name"]) || user.first_name,
+        last_name:
+          presence(params["author_last_name"]) || user.last_name,
+        email: user.email,
+        role_label: presence(params["author_role_label"]),
+        verified_role: verified_role
+      }
+
+      case DoleanceDossier.generate_letter(doleance, user.id, signer: signer) do
         {:ok, updated} -> json(conn, %{data: doleance_json(updated)})
         {:error, :no_ai_key} -> conn |> put_status(:service_unavailable) |> json(%{error: "L'assistant IA est désactivé sur cet environnement."})
         {:error, reason} -> conn |> put_status(:bad_gateway) |> json(%{error: "Génération IA échouée : #{inspect(reason)}"})
       end
     end
   end
+
+  defp maybe_persist_target(doleance, params, actor_id) do
+    attrs =
+      %{}
+      |> maybe_put("target_name", params["target_name"])
+      |> maybe_put("target_email", params["target_email"])
+      |> maybe_put("target_address", params["target_address"])
+
+    if map_size(attrs) == 0 do
+      {:ok, doleance}
+    else
+      Doleances.update_doleance(doleance, attrs, actor_id)
+    end
+  end
+
+  defp maybe_put(map, _key, nil), do: map
+  defp maybe_put(map, _key, ""), do: map
+  defp maybe_put(map, key, value) when is_binary(value), do: Map.put(map, key, String.trim(value))
+  defp maybe_put(map, _key, _value), do: map
+
+  defp presence(nil), do: nil
+  defp presence(s) when is_binary(s) do
+    case String.trim(s) do
+      "" -> nil
+      v -> v
+    end
+  end
+  defp presence(_), do: nil
 
   # POST /api/v1/buildings/:building_id/doleances/:id/suggest-experts
   def suggest_experts(conn, %{"building_id" => building_id, "doleance_id" => doleance_id}) do
@@ -342,6 +396,7 @@ defmodule KomunBackendWeb.DoleanceController do
       target_kind: d.target_kind,
       target_name: d.target_name,
       target_email: d.target_email,
+      target_address: d.target_address,
       ai_letter: d.ai_letter,
       ai_letter_generated_at: d.ai_letter_generated_at,
       ai_expert_suggestions: d.ai_expert_suggestions,

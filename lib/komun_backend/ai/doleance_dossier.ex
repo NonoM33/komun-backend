@@ -38,6 +38,20 @@ defmodule KomunBackend.AI.DoleanceDossier do
   - Termine par les pièces jointes (photos, devis, rapports d'expert,
     témoignages) en listant ce qui est attaché à la doléance.
 
+  Règles strictes sur l'identité — n'invente RIEN :
+
+  - Pour la signature, utilise littéralement le bloc <signataire> fourni
+    (nom, prénom, mention sous la signature). Si une "mention" est
+    donnée, c'est elle qui apparaît sous le nom — pas un titre que tu
+    devines toi-même. Si la mention est absente, signe simplement avec
+    nom + prénom, sans inventer de fonction. Si la mention contredit
+    manifestement le rôle vérifié (`role_verifie`), conserve la mention
+    fournie sans la corriger silencieusement.
+  - Pour le destinataire, utilise littéralement le bloc <destinataire>
+    fourni (nom, adresse postale). Ne devine pas un nom de cabinet ni
+    une adresse à partir du contexte — si un champ est manquant, omets
+    cette ligne plutôt que de la fabriquer.
+
   Commence directement par la lettre, sans phrase d'introduction, sans
   bloc markdown.
   """
@@ -61,11 +75,11 @@ defmodule KomunBackend.AI.DoleanceDossier do
 
   # ── Public API ───────────────────────────────────────────────────────────
 
-  def generate_letter(%Doleance{} = doleance, actor_id \\ nil) do
+  def generate_letter(%Doleance{} = doleance, actor_id \\ nil, opts \\ []) do
     if System.get_env("GROQ_API_KEY") in [nil, ""] do
       {:error, :no_ai_key}
     else
-      do_generate_letter(doleance, actor_id)
+      do_generate_letter(doleance, actor_id, opts)
     end
   end
 
@@ -79,20 +93,28 @@ defmodule KomunBackend.AI.DoleanceDossier do
 
   # ── Internals ────────────────────────────────────────────────────────────
 
-  defp do_generate_letter(doleance, actor_id) do
+  defp do_generate_letter(doleance, actor_id, opts) do
     context = Documents.context_for_ai(doleance.building_id, :coproprietaire)
     support_count = length(doleance.supports || [])
+    signer = Keyword.get(opts, :signer, %{})
 
     user_prompt = """
     <documents>
     #{context}
     </documents>
 
+    <signataire>
+    #{format_signer(signer)}
+    </signataire>
+
+    <destinataire>
+    #{format_recipient(doleance)}
+    </destinataire>
+
     Doléance à traiter :
     - Titre : #{doleance.title}
     - Catégorie : #{doleance.category}
     - Sévérité : #{doleance.severity}
-    - Destinataire visé : #{format_target(doleance)}
     - Nombre de copropriétaires co-signataires : #{support_count}
     - Description : #{doleance.description}
 
@@ -123,6 +145,52 @@ defmodule KomunBackend.AI.DoleanceDossier do
         err
     end
   end
+
+  defp format_signer(signer) when is_map(signer) do
+    first = Map.get(signer, :first_name) || ""
+    last = Map.get(signer, :last_name) || ""
+    label = Map.get(signer, :role_label)
+    verified = Map.get(signer, :verified_role)
+    email = Map.get(signer, :email)
+
+    name = String.trim("#{first} #{last}")
+    name = if name == "", do: "(non précisé)", else: name
+
+    """
+    - Prénom & nom : #{name}
+    - Mention à reprendre sous la signature : #{label || "(aucune — signer simplement avec le nom, ne pas inventer de titre)"}
+    - role_verifie (côté plateforme, à titre indicatif) : #{verified || "(aucun — l'utilisateur n'a pas de rôle officiel dans ce bâtiment)"}
+    - Email de contact : #{email || "(non communiqué)"}
+    """
+    |> String.trim()
+  end
+
+  defp format_signer(_), do: "(aucune information sur le signataire — signer 'Le conseil syndical' sans inventer de nom)"
+
+  defp format_recipient(doleance) do
+    kind_label =
+      case doleance.target_kind do
+        :syndic -> "Syndic"
+        :constructor -> "Constructeur"
+        :insurance -> "Assurance"
+        :authority -> "Autorité / service public"
+        :other -> "Autre"
+        nil -> "Destinataire (par défaut : syndic)"
+        _ -> "Destinataire"
+      end
+
+    """
+    - Type : #{kind_label}
+    - Nom : #{presence_or(doleance.target_name, "(non communiqué — omettre la ligne nom dans l'en-tête)")}
+    - Email : #{presence_or(doleance.target_email, "(non communiqué — ne pas en inventer)")}
+    - Adresse postale : #{presence_or(doleance.target_address, "(non communiquée — omettre la ligne adresse dans l'en-tête, mentionner que le courrier sera remis en main propre ou par email)")}
+    """
+    |> String.trim()
+  end
+
+  defp presence_or(nil, fallback), do: fallback
+  defp presence_or("", fallback), do: fallback
+  defp presence_or(value, _fallback), do: value
 
   defp do_suggest_experts(doleance, actor_id) do
     user_prompt = """
