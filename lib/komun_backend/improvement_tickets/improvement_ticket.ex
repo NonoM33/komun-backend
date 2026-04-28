@@ -22,6 +22,7 @@ defmodule KomunBackend.ImprovementTickets.ImprovementTicket do
     field :description, :string
     field :status, Ecto.Enum, values: @statuses, default: :open
     field :admin_note, :string
+    field :screenshot_urls, {:array, :string}, default: []
     field :resolved_at, :utc_datetime
 
     belongs_to :author, KomunBackend.Accounts.User, foreign_key: :author_id
@@ -44,6 +45,15 @@ defmodule KomunBackend.ImprovementTickets.ImprovementTicket do
     |> validate_required([:kind, :title, :description, :author_id])
     |> validate_length(:title, min: 5, max: 200)
     |> validate_length(:description, min: 5, max: 5_000)
+  end
+
+  @doc """
+  Changeset utilisé par les routes d'upload / suppression de capture
+  d'écran : on ne touche QUE `screenshot_urls`, jamais le reste du
+  ticket.
+  """
+  def screenshots_changeset(ticket, urls) when is_list(urls) do
+    cast(ticket, %{screenshot_urls: urls}, [:screenshot_urls])
   end
 
   @doc """
