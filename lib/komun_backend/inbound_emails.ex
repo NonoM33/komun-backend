@@ -138,11 +138,16 @@ defmodule KomunBackend.InboundEmails do
 
     description = build_public_description(email)
 
+    # Statut `brouillon` par défaut : tous les incidents créés via
+    # ingestion email passent d'abord par une revue admin avant
+    # publication (validation humaine demandée explicitement le 2026-04-28).
+    # L'admin peut basculer le statut vers :open depuis la fiche détail.
     attrs = %{
       "title" => title,
       "description" => description,
       "category" => "autre",
-      "severity" => "medium"
+      "severity" => "medium",
+      "status" => "brouillon"
     }
 
     with {:ok, incident} <- Incidents.create_incident(building_id, author_id, attrs),
