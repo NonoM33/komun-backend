@@ -75,6 +75,20 @@ defmodule KomunBackend.Diligences do
   defp step_order, do: from(s in DiligenceStep, order_by: [asc: s.step_number])
   defp file_order, do: from(f in DiligenceFile, order_by: [desc: f.inserted_at])
 
+  @doc """
+  Liste les diligences rattachées à un incident donné. Réservé CS+syndic
+  côté UX (le gating est dans le controller appelant — on ne sert que
+  des briefs aux non-privilégiés via `linked_diligences` côté incident).
+  """
+  def list_by_incident(incident_id) do
+    from(d in Diligence,
+      where: d.linked_incident_id == ^incident_id,
+      preload: [:created_by],
+      order_by: [desc: d.inserted_at]
+    )
+    |> Repo.all()
+  end
+
   def get_diligence!(id) do
     Diligence
     |> Repo.get!(id)

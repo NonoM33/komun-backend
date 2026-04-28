@@ -52,6 +52,13 @@ defmodule KomunBackend.Doleances.Doleance do
 
     belongs_to :building, KomunBackend.Buildings.Building
     belongs_to :author, KomunBackend.Accounts.User, foreign_key: :author_id
+
+    # Doléance issue d'un incident (« dégât → garantie → doléance »).
+    # Optionnel : la plupart des doléances naissent indépendamment d'un
+    # signalement. ON DELETE NILIFY côté DB.
+    belongs_to :linked_incident, KomunBackend.Incidents.Incident,
+      foreign_key: :linked_incident_id
+
     has_many :supports, KomunBackend.Doleances.DoleanceSupport
     has_many :events, KomunBackend.Doleances.DoleanceEvent, preload_order: [asc: :inserted_at]
     has_many :files, KomunBackend.Doleances.DoleanceFile
@@ -82,10 +89,12 @@ defmodule KomunBackend.Doleances.Doleance do
       :resolved_at,
       :resolution_note,
       :building_id,
-      :author_id
+      :author_id,
+      :linked_incident_id
     ])
     |> validate_required([:title, :description, :category, :building_id, :author_id])
     |> validate_length(:title, min: 5, max: 200)
     |> validate_length(:description, min: 10)
+    |> assoc_constraint(:linked_incident)
   end
 end
