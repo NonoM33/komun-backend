@@ -40,6 +40,7 @@ defmodule KomunBackend.Incidents do
     base
     |> apply_filter(:status, filters["status"])
     |> apply_filter(:severity, filters["severity"])
+    |> apply_drafts_visibility(filters, building_id, viewer)
     |> apply_visibility(building_id, viewer)
     |> Repo.all()
   end
@@ -47,6 +48,16 @@ defmodule KomunBackend.Incidents do
   defp apply_filter(q, _field, nil), do: q
   defp apply_filter(q, :status, v), do: where(q, [i], i.status == ^v)
   defp apply_filter(q, :severity, v), do: where(q, [i], i.severity == ^v)
+
+  # Brouillons cachés par défaut. `?status=brouillon` ou
+  # `?include_drafts=true` (réservé aux privilégiés) les exposent.
+  defp apply_drafts_visibility(q, filters, building_id, viewer) do
+    cond do
+      filters["status"] == "brouillon" -> q
+      filters["include_drafts"] in [true, "true"] and privileged?(building_id, viewer) -> q
+      true -> where(q, [i], i.status != :brouillon)
+    end
+  end
 
   # Si le viewer n'est pas membre privilégié, on cache les incidents
   # `:council_only` — ils ne sortent ni de la liste ni des endpoints qui
