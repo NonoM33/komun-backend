@@ -1,7 +1,7 @@
 defmodule KomunBackendWeb.DiligenceController do
   use KomunBackendWeb, :controller
 
-  alias KomunBackend.{Buildings, Diligences}
+  alias KomunBackend.{Buildings, Diligences, Projects}
   alias KomunBackend.Diligences.{Diligence, DiligenceFile, Steps}
   alias KomunBackend.Auth.Guardian
 
@@ -29,7 +29,14 @@ defmodule KomunBackendWeb.DiligenceController do
       diligence = Diligences.get_diligence!(id)
 
       if diligence.building_id == building_id do
-        json(conn, %{data: diligence_json(diligence)})
+        linked_projects = Projects.list_projects_linked_to_diligence(diligence.id)
+
+        payload =
+          diligence
+          |> diligence_json()
+          |> Map.put(:linked_projects, Enum.map(linked_projects, &linked_project_brief/1))
+
+        json(conn, %{data: payload})
       else
         # Garde-fou : un membre du bâtiment A ne doit pas pouvoir
         # piocher dans les diligences du bâtiment B en passant le
@@ -389,6 +396,22 @@ defmodule KomunBackendWeb.DiligenceController do
         opts |> Keyword.get(String.to_existing_atom(key), key) |> to_string()
       end)
     end)
+  end
+
+  # Brief utilisé pour la section « Devis demandés » de la fiche diligence.
+  defp linked_project_brief(p) do
+    devis_count =
+      case p.devis do
+        %Ecto.Association.NotLoaded{} -> 0
+        list when is_list(list) -> length(list)
+      end
+
+    %{
+      id: p.id,
+      title: p.title,
+      status: p.status,
+      devis_count: devis_count
+    }
   end
 
   defp save_upload(%Plug.Upload{filename: filename, path: tmp_path}, diligence_id) do
