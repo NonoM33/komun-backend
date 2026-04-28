@@ -235,7 +235,7 @@ defmodule KomunBackendWeb.DoleanceController do
     with :ok <- authorize_building(conn, building_id),
          :ok <- authorize_author_or_privileged(conn, building_id, user, doleance),
          {:ok, updated} <- Doleances.escalate(doleance, user.id) do
-      updated = KomunBackend.Repo.preload(updated, [:author, :files, supports: :user])
+      updated = KomunBackend.Repo.preload(updated, [:author, :files, :linked_incident, supports: :user])
       json(conn, %{data: doleance_json(updated)})
     else
       {:error, cs} ->
@@ -460,8 +460,24 @@ defmodule KomunBackendWeb.DoleanceController do
       author: maybe_user(d.author),
       supports: supports_json(d.supports),
       support_count: length(supports_list(d.supports)),
+      linked_incident_id: d.linked_incident_id,
+      linked_incident: maybe_incident_brief(d.linked_incident),
       inserted_at: d.inserted_at,
       updated_at: d.updated_at
+    }
+  end
+
+  # Brief minimal pour le bandeau « Issu de l'incident X » côté front.
+  # On ne renvoie que les champs nécessaires à l'affichage du lien.
+  defp maybe_incident_brief(%Ecto.Association.NotLoaded{}), do: nil
+  defp maybe_incident_brief(nil), do: nil
+
+  defp maybe_incident_brief(inc) do
+    %{
+      id: inc.id,
+      title: inc.title,
+      status: inc.status,
+      severity: inc.severity
     }
   end
 
