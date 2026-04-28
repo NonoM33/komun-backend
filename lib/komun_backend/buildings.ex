@@ -70,14 +70,32 @@ defmodule KomunBackend.Buildings do
 
       case KomunBackend.Residences.create_residence(residence_attrs) do
         {:ok, residence} ->
-          if Map.has_key?(attrs, :name),
-            do: Map.put(attrs, :residence_id, residence.id),
-            else: Map.put(attrs, "residence_id", residence.id)
+          # Building auto-créé via le path "résidence-clonée-du-name" :
+          # par construction c'est un placeholder. Flag posé dès la
+          # création pour qu'on n'ait pas à backfill plus tard si
+          # quelqu'un ajoute un vrai bâtiment à côté. On respecte le
+          # style de clés du caller (atom vs string) pour ne pas casser
+          # le `cast` du changeset, qui refuse les maps mixtes.
+          attrs
+          |> put_attr(:residence_id, residence.id)
+          |> put_attr(:is_placeholder, true)
 
         {:error, _} ->
           attrs
       end
     end
+  end
+
+  defp put_attr(attrs, key, value) when is_atom(key) do
+    if Map.has_key?(attrs, key) or has_atom_keys?(attrs) do
+      Map.put(attrs, key, value)
+    else
+      Map.put(attrs, to_string(key), value)
+    end
+  end
+
+  defp has_atom_keys?(attrs) do
+    Enum.any?(Map.keys(attrs), &is_atom/1)
   end
 
   # Stuffs a fresh join_code into the attrs if the caller didn't provide one.

@@ -30,7 +30,8 @@ defmodule KomunBackendWeb.BuildingController do
         lot_count: b.lot_count,
         cover_url: b.cover_url,
         role: role,
-        residence_id: b.residence_id
+        residence_id: b.residence_id,
+        is_placeholder: b.is_placeholder
       }
 
       if user.role == :super_admin or role in @privileged_roles do
@@ -147,7 +148,8 @@ defmodule KomunBackendWeb.BuildingController do
       lot_count: b.lot_count,
       cover_url: b.cover_url,
       role: :coproprietaire,
-      residence_id: b.residence_id
+      residence_id: b.residence_id,
+      is_placeholder: b.is_placeholder
     }
   end
 
