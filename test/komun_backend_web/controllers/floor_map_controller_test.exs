@@ -13,6 +13,8 @@ defmodule KomunBackendWeb.FloorMapControllerTest do
 
   use KomunBackendWeb.ConnCase, async: false
 
+  import Ecto.Query
+
   alias KomunBackend.{Buildings, Repo, Residences}
   alias KomunBackend.Accounts.User
   alias KomunBackend.Auth.Guardian
@@ -240,6 +242,101 @@ defmodule KomunBackendWeb.FloorMapControllerTest do
       assert body["data"]["subtype"] == "noise"
       assert [target] = body["data"]["targets"]
       assert target["lot"]["number"] == "2002"
+    end
+  end
+
+  describe "POST /buildings/:b/lots/generate" do
+    test "le syndic amorce les lots avec la convention de numérotation",
+         %{conn: conn} do
+      r = insert_residence!()
+      b = insert_building!(r)
+      syndic = insert_user!(:syndic_manager)
+
+      body =
+        conn
+        |> authed(syndic)
+        |> post(~p"/api/v1/buildings/#{b.id}/lots/generate", %{
+          floors: 2,
+          lots_per_floor: 3
+        })
+        |> json_response(200)
+
+      # La réponse rejoue /floor-map (groupes par étage, ordre desc).
+      assert [%{"floor" => 2, "lots" => f2}, %{"floor" => 1, "lots" => f1}] =
+               body["data"]
+
+      numbers_f2 = f2 |> Enum.map(& &1["number"]) |> Enum.sort()
+      numbers_f1 = f1 |> Enum.map(& &1["number"]) |> Enum.sort()
+      assert numbers_f2 == ["2001", "2002", "2003"]
+      assert numbers_f1 == ["1001", "1002", "1003"]
+
+      # La convention 2003 → 1003 doit fonctionner immédiatement.
+      lot_2003 = Enum.find(f2, &(&1["number"] == "2003"))
+      assert lot_2003["computed_below"]["number"] == "1003"
+    end
+
+    test "409 si le bâtiment a déjà des lots", %{conn: conn} do
+      r = insert_residence!()
+      b = insert_building!(r)
+      _existing = insert_lot!(b, %{number: "1001", floor: 1})
+
+      syndic = insert_user!(:syndic_manager)
+
+      assert conn
+             |> authed(syndic)
+             |> post(~p"/api/v1/buildings/#{b.id}/lots/generate", %{
+               floors: 2,
+               lots_per_floor: 3
+             })
+             |> json_response(409)
+
+      # Aucun lot supplémentaire n'est créé.
+      assert Repo.aggregate(
+               from(l in Lot, where: l.building_id == ^b.id),
+               :count
+             ) == 1
+    end
+
+    test "422 si floors ou lots_per_floor < 1", %{conn: conn} do
+      r = insert_residence!()
+      b = insert_building!(r)
+      syndic = insert_user!(:syndic_manager)
+
+      assert conn
+             |> authed(syndic)
+             |> post(~p"/api/v1/buildings/#{b.id}/lots/generate", %{
+               floors: 0,
+               lots_per_floor: 3
+             })
+             |> json_response(422)
+
+      assert conn
+             |> authed(syndic)
+             |> post(~p"/api/v1/buildings/#{b.id}/lots/generate", %{
+               floors: 2,
+               lots_per_floor: 0
+             })
+             |> json_response(422)
+
+      assert Repo.aggregate(
+               from(l in Lot, where: l.building_id == ^b.id),
+               :count
+             ) == 0
+    end
+
+    test "403 pour un membre du CS (lecture seule)", %{conn: conn} do
+      r = insert_residence!()
+      b = insert_building!(r)
+      user = insert_user!()
+      {:ok, _} = Buildings.add_member(b.id, user.id, :membre_cs)
+
+      assert conn
+             |> authed(user)
+             |> post(~p"/api/v1/buildings/#{b.id}/lots/generate", %{
+               floors: 2,
+               lots_per_floor: 3
+             })
+             |> json_response(403)
     end
   end
 end

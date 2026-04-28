@@ -7,9 +7,16 @@ defmodule KomunBackendWeb.ProjectController do
   @privileged_roles [:super_admin, :syndic_manager, :syndic_staff, :president_cs, :membre_cs]
 
   # GET /api/v1/buildings/:building_id/projects
-  def index(conn, %{"building_id" => building_id}) do
+  # Filtres optionnels : ?linked_incident_id=…, ?linked_doleance_id=…,
+  # ?linked_diligence_id=… — pratique pour afficher les devis demandés
+  # sur la fiche d'un dossier sans charger toute la liste.
+  def index(conn, %{"building_id" => building_id} = params) do
     with :ok <- authorize_building(conn, building_id) do
-      projects = Projects.list_projects(building_id)
+      filters =
+        params
+        |> Map.take(["linked_incident_id", "linked_doleance_id", "linked_diligence_id"])
+
+      projects = Projects.list_projects(building_id, filters)
       json(conn, %{data: Enum.map(projects, &project_json/1)})
     end
   end
@@ -170,8 +177,27 @@ defmodule KomunBackendWeb.ProjectController do
       vote: vote_brief(project.vote),
       created_by: maybe_user(project.created_by),
       devis: devis_list(project.devis),
+      linked_incident_id: project.linked_incident_id,
+      linked_doleance_id: project.linked_doleance_id,
+      linked_diligence_id: project.linked_diligence_id,
+      linked_incident: linked_case_brief(project.linked_incident),
+      linked_doleance: linked_case_brief(project.linked_doleance),
+      linked_diligence: linked_case_brief(project.linked_diligence),
       inserted_at: project.inserted_at,
       updated_at: project.updated_at
+    }
+  end
+
+  @doc false
+  # Brief : juste id + titre + statut, suffit pour afficher un badge
+  # cliquable « Lié à <type> : <titre> » dans la fiche projet.
+  def linked_case_brief(%Ecto.Association.NotLoaded{}), do: nil
+  def linked_case_brief(nil), do: nil
+  def linked_case_brief(case_record) do
+    %{
+      id: case_record.id,
+      title: Map.get(case_record, :title),
+      status: Map.get(case_record, :status)
     }
   end
 

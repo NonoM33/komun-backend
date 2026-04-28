@@ -46,6 +46,11 @@ defmodule KomunBackendWeb.Router do
     # GDPR consent log — accepts anonymous visitors (visitor_id param)
     # or authenticated users (user_id attached via optional auth).
     post "/consents", ConsentController, :create
+
+    # Webhook Resend Inbound — auth via header `Authorization: Bearer
+    # <RESEND_INBOUND_SECRET>` vérifié dans le controller. Public
+    # parce qu'il vient d'un service externe (Resend), pas d'un user.
+    post "/webhooks/resend/inbound", WebhookController, :resend_inbound
   end
 
   # ── Authenticated routes ──────────────────────────────────────────────────
@@ -266,6 +271,7 @@ defmodule KomunBackendWeb.Router do
     # Lecture : syndic + CS. Édition de l'adjacence : syndic + super_admin.
     # Le gating fin est dans le controller (cf. @read_roles / @edit_roles).
     get   "/buildings/:building_id/floor-map", FloorMapController, :show
+    post  "/buildings/:building_id/lots/generate", FloorMapController, :generate_lots
     patch "/lots/:id/adjacency",               FloorMapController, :update_adjacency
     put   "/lots/:id/adjacency",               FloorMapController, :update_adjacency
     get   "/lots/:id/notify-preview",          FloorMapController, :notify_preview

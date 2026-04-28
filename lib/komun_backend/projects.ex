@@ -15,10 +15,65 @@ defmodule KomunBackend.Projects do
 
   # ── Projects ────────────────────────────────────────────────────────────
 
-  def list_projects(building_id) do
+  @preloads [
+    :created_by,
+    :vote,
+    :linked_incident,
+    :linked_doleance,
+    :linked_diligence,
+    devis: :uploaded_by
+  ]
+
+  def list_projects(building_id, filters \\ %{}) do
     from(p in Project,
       where: p.building_id == ^building_id,
-      preload: [:created_by, :vote, devis: :uploaded_by],
+      preload: ^@preloads,
+      order_by: [desc: p.inserted_at]
+    )
+    |> apply_filter(:linked_incident_id, filters["linked_incident_id"])
+    |> apply_filter(:linked_doleance_id, filters["linked_doleance_id"])
+    |> apply_filter(:linked_diligence_id, filters["linked_diligence_id"])
+    |> Repo.all()
+  end
+
+  defp apply_filter(q, _field, nil), do: q
+  defp apply_filter(q, _field, ""), do: q
+  defp apply_filter(q, :linked_incident_id, v),
+    do: where(q, [p], p.linked_incident_id == ^v)
+  defp apply_filter(q, :linked_doleance_id, v),
+    do: where(q, [p], p.linked_doleance_id == ^v)
+  defp apply_filter(q, :linked_diligence_id, v),
+    do: where(q, [p], p.linked_diligence_id == ^v)
+
+  @doc """
+  Liste plate des projets liés à un incident donné — utile pour le
+  badge « N devis demandés » sur la fiche incident sans avoir à
+  charger le building entier.
+  """
+  def list_projects_linked_to_incident(incident_id) do
+    from(p in Project,
+      where: p.linked_incident_id == ^incident_id,
+      preload: ^@preloads,
+      order_by: [desc: p.inserted_at]
+    )
+    |> Repo.all()
+  end
+
+  @doc "Idem que list_projects_linked_to_incident/1 pour une doléance."
+  def list_projects_linked_to_doleance(doleance_id) do
+    from(p in Project,
+      where: p.linked_doleance_id == ^doleance_id,
+      preload: ^@preloads,
+      order_by: [desc: p.inserted_at]
+    )
+    |> Repo.all()
+  end
+
+  @doc "Idem pour une diligence."
+  def list_projects_linked_to_diligence(diligence_id) do
+    from(p in Project,
+      where: p.linked_diligence_id == ^diligence_id,
+      preload: ^@preloads,
       order_by: [desc: p.inserted_at]
     )
     |> Repo.all()
@@ -27,7 +82,7 @@ defmodule KomunBackend.Projects do
   def get_project(building_id, id) do
     from(p in Project,
       where: p.building_id == ^building_id and p.id == ^id,
-      preload: [:created_by, :vote, devis: :uploaded_by]
+      preload: ^@preloads
     )
     |> Repo.one()
   end

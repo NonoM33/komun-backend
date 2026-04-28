@@ -29,7 +29,8 @@ defmodule KomunBackendWeb.BuildingController do
         postal_code: b.postal_code,
         lot_count: b.lot_count,
         cover_url: b.cover_url,
-        role: role
+        role: role,
+        residence_id: b.residence_id
       }
 
       if user.role == :super_admin or role in @privileged_roles do
@@ -49,7 +50,8 @@ defmodule KomunBackendWeb.BuildingController do
       city: building.city,
       postal_code: building.postal_code,
       lot_count: building.lot_count,
-      cover_url: building.cover_url
+      cover_url: building.cover_url,
+      residence_id: building.residence_id
     }})
   end
 
@@ -144,7 +146,8 @@ defmodule KomunBackendWeb.BuildingController do
       postal_code: b.postal_code,
       lot_count: b.lot_count,
       cover_url: b.cover_url,
-      role: :coproprietaire
+      role: :coproprietaire,
+      residence_id: b.residence_id
     }
   end
 

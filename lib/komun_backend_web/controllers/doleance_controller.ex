@@ -1,7 +1,7 @@
 defmodule KomunBackendWeb.DoleanceController do
   use KomunBackendWeb, :controller
 
-  alias KomunBackend.{Buildings, Doleances}
+  alias KomunBackend.{Buildings, Doleances, Projects}
   alias KomunBackend.Doleances.DoleanceFile
   alias KomunBackend.AI.DoleanceDossier
   alias KomunBackend.Auth.Guardian
@@ -26,7 +26,14 @@ defmodule KomunBackendWeb.DoleanceController do
   def show(conn, %{"building_id" => building_id, "id" => id}) do
     with :ok <- authorize_building(conn, building_id) do
       doleance = Doleances.get_doleance!(id)
-      json(conn, %{data: doleance_json(doleance)})
+      linked_projects = Projects.list_projects_linked_to_doleance(doleance.id)
+
+      payload =
+        doleance
+        |> doleance_json()
+        |> Map.put(:linked_projects, Enum.map(linked_projects, &linked_project_brief/1))
+
+      json(conn, %{data: payload})
     end
   end
 
@@ -392,6 +399,22 @@ defmodule KomunBackendWeb.DoleanceController do
       first_name: u.first_name,
       last_name: u.last_name,
       avatar_url: u.avatar_url
+    }
+  end
+
+  # Brief utilisé pour la section « Devis demandés » de la fiche doléance.
+  defp linked_project_brief(p) do
+    devis_count =
+      case p.devis do
+        %Ecto.Association.NotLoaded{} -> 0
+        list when is_list(list) -> length(list)
+      end
+
+    %{
+      id: p.id,
+      title: p.title,
+      status: p.status,
+      devis_count: devis_count
     }
   end
 
