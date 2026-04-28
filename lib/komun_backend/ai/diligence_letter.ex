@@ -146,16 +146,35 @@ defmodule KomunBackend.AI.DiligenceLetter do
         %{role: :user, content: user_prompt(diligence)}
       ]
 
-      case AI.Groq.complete(messages, max_tokens: 1500, temperature: 0.3) do
-        {:ok, %{content: content}} when is_binary(content) and byte_size(content) > 0 ->
-          {:ok, content}
+      complete_with_retry(messages, 4000)
+    end
+  end
 
-        {:ok, _} ->
-          {:error, :empty_response}
+  # Une lettre formelle ne doit jamais être livrée tronquée. Si Groq
+  # signale `finish_reason: "length"`, on retente une fois avec un
+  # budget plus large ; sinon on tombe sur le template statique
+  # plutôt que de persister un courrier qui s'arrête au milieu d'une
+  # phrase.
+  defp complete_with_retry(messages, max_tokens) do
+    case AI.Groq.complete(messages, max_tokens: max_tokens, temperature: 0.3) do
+      {:ok, %{finish_reason: "length"}} when max_tokens < 8000 ->
+        Logger.warning(
+          "[diligences] AI letter truncated at #{max_tokens} tokens, retrying with 8000."
+        )
 
-        {:error, reason} ->
-          {:error, reason}
-      end
+        complete_with_retry(messages, 8000)
+
+      {:ok, %{finish_reason: "length"}} ->
+        {:error, :truncated}
+
+      {:ok, %{content: content}} when is_binary(content) and byte_size(content) > 0 ->
+        {:ok, content}
+
+      {:ok, _} ->
+        {:error, :empty_response}
+
+      {:error, reason} ->
+        {:error, reason}
     end
   end
 

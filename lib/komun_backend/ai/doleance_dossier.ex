@@ -19,6 +19,16 @@ defmodule KomunBackend.AI.DoleanceDossier do
   alias KomunBackend.{AI, Documents, Doleances}
   alias KomunBackend.Doleances.Doleance
 
+  # Budget initial pour une lettre formelle française (faits, fondement
+  # juridique, demandes précises, signature). Une lettre type rentre
+  # confortablement dans 4000 tokens.
+  @letter_max_tokens 4000
+
+  # Budget de retry si la première génération est tronquée. On double
+  # plutôt que d'extrapoler la longueur réelle — gpt-oss-120b accepte
+  # jusqu'à 32k tokens en sortie, donc 8000 reste très large.
+  @letter_retry_max_tokens 8000
+
   @letter_prompt """
   Tu es juriste en copropriété. Un copropriétaire (ou un groupe) vient
   de te soumettre une doléance persistante qui justifie une saisine
@@ -130,18 +140,48 @@ defmodule KomunBackend.AI.DoleanceDossier do
       %{role: :user, content: user_prompt}
     ]
 
-    case AI.Groq.complete(messages, max_tokens: 1400) do
+    case complete_letter(messages, @letter_max_tokens) do
       {:ok, %{content: letter, model: model}} ->
         case Doleances.save_ai_letter(doleance, letter, model, actor_id) do
           {:ok, updated} -> {:ok, updated}
           error -> error
         end
 
-      {:error, reason} = err ->
-        Logger.warning(
-          "AI letter for doleance #{doleance.id} failed: #{inspect(reason)}"
+      {:error, :truncated} ->
+        Logger.error(
+          "AI letter for doleance #{doleance.id} was truncated even at #{@letter_retry_max_tokens} tokens — refusing to persist a partial letter."
         )
 
+        {:error, :truncated}
+
+      {:error, reason} = err ->
+        Logger.warning("AI letter for doleance #{doleance.id} failed: #{inspect(reason)}")
+
+        err
+    end
+  end
+
+  # Appelle Groq et, si la réponse est tronquée par la limite de
+  # tokens, retente une fois avec un budget plus large. Une lettre
+  # formelle ne doit JAMAIS être persistée à moitié — l'utilisateur
+  # se retrouverait avec un courrier qui s'arrête au milieu d'une
+  # phrase ("...à compter de la").
+  defp complete_letter(messages, max_tokens) do
+    case AI.Groq.complete(messages, max_tokens: max_tokens) do
+      {:ok, %{finish_reason: "length"}} when max_tokens < @letter_retry_max_tokens ->
+        Logger.warning(
+          "AI letter truncated at #{max_tokens} tokens, retrying with #{@letter_retry_max_tokens}."
+        )
+
+        complete_letter(messages, @letter_retry_max_tokens)
+
+      {:ok, %{finish_reason: "length"}} ->
+        {:error, :truncated}
+
+      {:ok, _} = ok ->
+        ok
+
+      {:error, _} = err ->
         err
     end
   end
@@ -165,7 +205,9 @@ defmodule KomunBackend.AI.DoleanceDossier do
     |> String.trim()
   end
 
-  defp format_signer(_), do: "(aucune information sur le signataire — signer 'Le conseil syndical' sans inventer de nom)"
+  defp format_signer(_),
+    do:
+      "(aucune information sur le signataire — signer 'Le conseil syndical' sans inventer de nom)"
 
   defp format_recipient(doleance) do
     kind_label =
