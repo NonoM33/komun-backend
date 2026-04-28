@@ -339,4 +339,323 @@ defmodule KomunBackendWeb.FloorMapControllerTest do
              |> json_response(403)
     end
   end
+
+  describe "DELETE /lots/:id" do
+    test "le syndic supprime un lot et la réponse rejoue /floor-map sans lui",
+         %{conn: conn} do
+      r = insert_residence!()
+      b = insert_building!(r)
+      lot_1001 = insert_lot!(b, %{number: "1001", floor: 1})
+      _lot_1002 = insert_lot!(b, %{number: "1002", floor: 1})
+
+      syndic = insert_user!(:syndic_manager)
+
+      body =
+        conn
+        |> authed(syndic)
+        |> delete(~p"/api/v1/lots/#{lot_1001.id}")
+        |> json_response(200)
+
+      assert [%{"floor" => 1, "lots" => f1}] = body["data"]
+      numbers = f1 |> Enum.map(& &1["number"]) |> Enum.sort()
+      assert numbers == ["1002"]
+
+      refute Repo.get(Lot, lot_1001.id)
+    end
+
+    test "nettoie les neighbor_lot_ids des autres lots qui pointaient vers lui",
+         %{conn: conn} do
+      r = insert_residence!()
+      b = insert_building!(r)
+      lot_a = insert_lot!(b, %{number: "1001", floor: 1})
+      lot_b = insert_lot!(b, %{number: "1002", floor: 1})
+      lot_c = insert_lot!(b, %{number: "1003", floor: 1})
+
+      lot_b
+      |> Ecto.Changeset.change(neighbor_lot_ids: [lot_a.id, lot_c.id])
+      |> Repo.update!()
+
+      syndic = insert_user!(:syndic_manager)
+
+      conn
+      |> authed(syndic)
+      |> delete(~p"/api/v1/lots/#{lot_a.id}")
+      |> json_response(200)
+
+      assert Repo.get(Lot, lot_b.id).neighbor_lot_ids == [lot_c.id]
+    end
+
+    test "nilify les overrides d'adjacence des lots qui pointaient vers lui",
+         %{conn: conn} do
+      r = insert_residence!()
+      b = insert_building!(r)
+      lot_below = insert_lot!(b, %{number: "1001", floor: 1})
+      lot_above = insert_lot!(b, %{number: "2001", floor: 2})
+
+      lot_above
+      |> Ecto.Changeset.change(unit_below_lot_id: lot_below.id)
+      |> Repo.update!()
+
+      syndic = insert_user!(:syndic_manager)
+
+      conn
+      |> authed(syndic)
+      |> delete(~p"/api/v1/lots/#{lot_below.id}")
+      |> json_response(200)
+
+      refute Repo.get(Lot, lot_above.id).unit_below_lot_id
+    end
+
+    test "détache (nilify) le primary_lot des membres rattachés à ce lot",
+         %{conn: conn} do
+      r = insert_residence!()
+      b = insert_building!(r)
+      lot = insert_lot!(b, %{number: "1001", floor: 1})
+
+      user = insert_user!()
+      member = link_member!(b.id, user, lot)
+
+      syndic = insert_user!(:syndic_manager)
+
+      conn
+      |> authed(syndic)
+      |> delete(~p"/api/v1/lots/#{lot.id}")
+      |> json_response(200)
+
+      refute Repo.reload!(member).primary_lot_id
+    end
+
+    test "403 pour un membre du CS (édition réservée au syndic)", %{conn: conn} do
+      r = insert_residence!()
+      b = insert_building!(r)
+      lot = insert_lot!(b, %{number: "1001", floor: 1})
+      user = insert_user!()
+      {:ok, _} = Buildings.add_member(b.id, user.id, :membre_cs)
+
+      assert conn
+             |> authed(user)
+             |> delete(~p"/api/v1/lots/#{lot.id}")
+             |> json_response(403)
+
+      assert Repo.get(Lot, lot.id)
+    end
+  end
+
+  describe "DELETE /buildings/:b/floors/:floor" do
+    test "le syndic supprime tous les lots d'un étage et la réponse rejoue /floor-map",
+         %{conn: conn} do
+      r = insert_residence!()
+      b = insert_building!(r)
+      _ = insert_lot!(b, %{number: "1001", floor: 1})
+      _ = insert_lot!(b, %{number: "1002", floor: 1})
+      kept = insert_lot!(b, %{number: "2001", floor: 2})
+
+      syndic = insert_user!(:syndic_manager)
+
+      body =
+        conn
+        |> authed(syndic)
+        |> delete(~p"/api/v1/buildings/#{b.id}/floors/1")
+        |> json_response(200)
+
+      assert [%{"floor" => 2, "lots" => f2}] = body["data"]
+      assert [%{"id" => id}] = f2
+      assert id == kept.id
+
+      assert Repo.aggregate(from(l in Lot, where: l.building_id == ^b.id), :count) == 1
+    end
+
+    test "rince les neighbor_lot_ids des lots restants qui pointaient vers cet étage",
+         %{conn: conn} do
+      r = insert_residence!()
+      b = insert_building!(r)
+      lot_floor1_a = insert_lot!(b, %{number: "1001", floor: 1})
+      lot_floor1_b = insert_lot!(b, %{number: "1002", floor: 1})
+      lot_floor2 = insert_lot!(b, %{number: "2001", floor: 2})
+
+      lot_floor2
+      |> Ecto.Changeset.change(neighbor_lot_ids: [lot_floor1_a.id, lot_floor1_b.id])
+      |> Repo.update!()
+
+      syndic = insert_user!(:syndic_manager)
+
+      conn
+      |> authed(syndic)
+      |> delete(~p"/api/v1/buildings/#{b.id}/floors/1")
+      |> json_response(200)
+
+      assert Repo.get(Lot, lot_floor2.id).neighbor_lot_ids == []
+    end
+
+    test "200 idempotent même si l'étage n'existe pas", %{conn: conn} do
+      r = insert_residence!()
+      b = insert_building!(r)
+      _ = insert_lot!(b, %{number: "1001", floor: 1})
+
+      syndic = insert_user!(:syndic_manager)
+
+      body =
+        conn
+        |> authed(syndic)
+        |> delete(~p"/api/v1/buildings/#{b.id}/floors/9")
+        |> json_response(200)
+
+      assert [%{"floor" => 1}] = body["data"]
+    end
+
+    test "400 sur étage non numérique", %{conn: conn} do
+      r = insert_residence!()
+      b = insert_building!(r)
+      syndic = insert_user!(:syndic_manager)
+
+      assert conn
+             |> authed(syndic)
+             |> delete(~p"/api/v1/buildings/#{b.id}/floors/abc")
+             |> json_response(400)
+    end
+
+    test "403 pour un membre du CS", %{conn: conn} do
+      r = insert_residence!()
+      b = insert_building!(r)
+      _ = insert_lot!(b, %{number: "1001", floor: 1})
+      user = insert_user!()
+      {:ok, _} = Buildings.add_member(b.id, user.id, :membre_cs)
+
+      assert conn
+             |> authed(user)
+             |> delete(~p"/api/v1/buildings/#{b.id}/floors/1")
+             |> json_response(403)
+
+      assert Repo.aggregate(from(l in Lot, where: l.building_id == ^b.id), :count) == 1
+    end
+  end
+
+  describe "PUT /buildings/:b/floors/:floor/label" do
+    test "le syndic pose une étiquette personnalisée et /floor-map la renvoie",
+         %{conn: conn} do
+      r = insert_residence!()
+      b = insert_building!(r)
+      _ = insert_lot!(b, %{number: "1001", floor: 1})
+
+      syndic = insert_user!(:syndic_manager)
+
+      body =
+        conn
+        |> authed(syndic)
+        |> put(~p"/api/v1/buildings/#{b.id}/floors/1/label", %{label: "Niveau commercial"})
+        |> json_response(200)
+
+      assert body["data"] == %{"floor" => 1, "custom_label" => "Niveau commercial"}
+
+      map_body =
+        conn
+        |> authed(syndic)
+        |> get(~p"/api/v1/buildings/#{b.id}/floor-map")
+        |> json_response(200)
+
+      assert [%{"floor" => 1, "custom_label" => "Niveau commercial"}] = map_body["data"]
+    end
+
+    test "label vide ou null retire l'override", %{conn: conn} do
+      r = insert_residence!()
+      b = insert_building!(r)
+      _ = insert_lot!(b, %{number: "1001", floor: 1})
+      syndic = insert_user!(:syndic_manager)
+
+      conn
+      |> authed(syndic)
+      |> put(~p"/api/v1/buildings/#{b.id}/floors/1/label", %{label: "Custom"})
+      |> json_response(200)
+
+      body =
+        conn
+        |> authed(syndic)
+        |> put(~p"/api/v1/buildings/#{b.id}/floors/1/label", %{label: nil})
+        |> json_response(200)
+
+      assert body["data"]["custom_label"] in [nil]
+
+      assert Repo.get!(KomunBackend.Buildings.Building, b.id).floor_labels == %{}
+    end
+
+    test "400 sur étage non numérique", %{conn: conn} do
+      r = insert_residence!()
+      b = insert_building!(r)
+      syndic = insert_user!(:syndic_manager)
+
+      assert conn
+             |> authed(syndic)
+             |> put(~p"/api/v1/buildings/#{b.id}/floors/abc/label", %{label: "x"})
+             |> json_response(400)
+    end
+
+    test "403 pour un membre du CS", %{conn: conn} do
+      r = insert_residence!()
+      b = insert_building!(r)
+      user = insert_user!()
+      {:ok, _} = Buildings.add_member(b.id, user.id, :membre_cs)
+
+      assert conn
+             |> authed(user)
+             |> put(~p"/api/v1/buildings/#{b.id}/floors/1/label", %{label: "x"})
+             |> json_response(403)
+    end
+  end
+
+  describe "DELETE /buildings/:b/lots (reset complet)" do
+    test "le syndic vide la cartographie et /floor-map renvoie une liste vide",
+         %{conn: conn} do
+      r = insert_residence!()
+      b = insert_building!(r)
+      _ = insert_lot!(b, %{number: "1001", floor: 1})
+      _ = insert_lot!(b, %{number: "2001", floor: 2})
+
+      syndic = insert_user!(:syndic_manager)
+
+      body =
+        conn
+        |> authed(syndic)
+        |> delete(~p"/api/v1/buildings/#{b.id}/lots")
+        |> json_response(200)
+
+      assert body["data"] == []
+      assert Repo.aggregate(from(l in Lot, where: l.building_id == ^b.id), :count) == 0
+    end
+
+    test "permet de re-générer un grid après le reset", %{conn: conn} do
+      r = insert_residence!()
+      b = insert_building!(r)
+      _ = insert_lot!(b, %{number: "1001", floor: 1})
+
+      syndic = insert_user!(:syndic_manager)
+
+      conn
+      |> authed(syndic)
+      |> delete(~p"/api/v1/buildings/#{b.id}/lots")
+      |> json_response(200)
+
+      # Après reset, generate_lots ne renvoie plus :lots_already_exist.
+      conn
+      |> authed(syndic)
+      |> post(~p"/api/v1/buildings/#{b.id}/lots/generate", %{floors: 1, lots_per_floor: 2})
+      |> json_response(200)
+
+      assert Repo.aggregate(from(l in Lot, where: l.building_id == ^b.id), :count) == 2
+    end
+
+    test "403 pour un membre du CS", %{conn: conn} do
+      r = insert_residence!()
+      b = insert_building!(r)
+      _ = insert_lot!(b, %{number: "1001", floor: 1})
+      user = insert_user!()
+      {:ok, _} = Buildings.add_member(b.id, user.id, :membre_cs)
+
+      assert conn
+             |> authed(user)
+             |> delete(~p"/api/v1/buildings/#{b.id}/lots")
+             |> json_response(403)
+
+      assert Repo.aggregate(from(l in Lot, where: l.building_id == ^b.id), :count) == 1
+    end
+  end
 end

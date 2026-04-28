@@ -70,14 +70,32 @@ defmodule KomunBackend.Buildings do
 
       case KomunBackend.Residences.create_residence(residence_attrs) do
         {:ok, residence} ->
-          if Map.has_key?(attrs, :name),
-            do: Map.put(attrs, :residence_id, residence.id),
-            else: Map.put(attrs, "residence_id", residence.id)
+          # Building auto-créé via le path "résidence-clonée-du-name" :
+          # par construction c'est un placeholder. Flag posé dès la
+          # création pour qu'on n'ait pas à backfill plus tard si
+          # quelqu'un ajoute un vrai bâtiment à côté. On respecte le
+          # style de clés du caller (atom vs string) pour ne pas casser
+          # le `cast` du changeset, qui refuse les maps mixtes.
+          attrs
+          |> put_attr(:residence_id, residence.id)
+          |> put_attr(:is_placeholder, true)
 
         {:error, _} ->
           attrs
       end
     end
+  end
+
+  defp put_attr(attrs, key, value) when is_atom(key) do
+    if Map.has_key?(attrs, key) or has_atom_keys?(attrs) do
+      Map.put(attrs, key, value)
+    else
+      Map.put(attrs, to_string(key), value)
+    end
+  end
+
+  defp has_atom_keys?(attrs) do
+    Enum.any?(Map.keys(attrs), &is_atom/1)
   end
 
   # Stuffs a fresh join_code into the attrs if the caller didn't provide one.
@@ -419,6 +437,153 @@ defmodule KomunBackend.Buildings do
           {:error, reason} -> {:error, reason}
         end
     end
+  end
+
+  @doc """
+  Supprime un `Lot` du bâtiment.
+
+  Utilisé par `/admin/floor-map` quand le grid généré ne correspond pas
+  exactement à la réalité — typiquement un RDC qui a moins de logements
+  que les étages courants, ou une cellule "fantôme" créée par la
+  génération automatique.
+
+  Cascade BDD :
+  - `building_members.primary_lot_id` → `nilify_all` (le membre reste,
+    il perd juste son rattachement à ce lot).
+  - `lots.unit_below_lot_id` / `unit_above_lot_id` → `nilify_all` (les
+    overrides d'adjacence pointant vers ce lot redeviennent vides).
+  - `reservations.lot_id` → `delete_all` (les résas sur ce lot tombent —
+    pertinent pour les places de parking supprimées).
+
+  Nettoyage manuel : `neighbor_lot_ids` (array de FK sans contrainte BDD)
+  est rincé sur les autres lots du même bâtiment qui pourraient encore
+  référencer ce lot — sinon l'`Adjacency` continuerait à essayer de
+  notifier un lot mort.
+  """
+  def delete_lot(%Lot{id: lot_id, building_id: building_id} = lot) do
+    Repo.transaction(fn ->
+      from(l in Lot,
+        where:
+          l.building_id == ^building_id and
+            fragment("? = ANY(?)", type(^lot_id, :binary_id), l.neighbor_lot_ids),
+        update: [
+          set: [
+            neighbor_lot_ids:
+              fragment("array_remove(?, ?)", l.neighbor_lot_ids, type(^lot_id, :binary_id))
+          ]
+        ]
+      )
+      |> Repo.update_all([])
+
+      case Repo.delete(lot) do
+        {:ok, deleted} -> deleted
+        {:error, cs} -> Repo.rollback(cs)
+      end
+    end)
+  end
+
+  @doc """
+  Supprime tous les lots d'un étage donné dans un bâtiment.
+
+  Utilisé quand un étage entier a été généré par erreur — typiquement
+  l'utilisateur a tapé "5" au lieu de "4" dans le formulaire et veut
+  retirer le 5e étage en entier sans le faire lot par lot.
+
+  Mêmes garanties de nettoyage que `delete_lot/1` :
+  - on rince `neighbor_lot_ids` des autres lots du bâtiment qui
+    référenceraient un des lots supprimés (Postgres `array_diff` via
+    `array(... EXCEPT ...)`),
+  - les FK BDD font le reste (overrides nilifiés, primary_lot nilifié,
+    réservations supprimées).
+
+  Renvoie `{:ok, count}` (nombre de lots supprimés, possiblement 0) ou
+  `{:error, reason}`.
+  """
+  def delete_floor(%Building{id: building_id}, floor) when is_integer(floor) do
+    deleted_ids =
+      from(l in Lot,
+        where: l.building_id == ^building_id and l.floor == ^floor,
+        select: l.id
+      )
+      |> Repo.all()
+
+    if deleted_ids == [] do
+      {:ok, 0}
+    else
+      Repo.transaction(fn ->
+        from(l in Lot,
+          where:
+            l.building_id == ^building_id and l.floor != ^floor and
+              fragment("? && ?", l.neighbor_lot_ids, type(^deleted_ids, {:array, :binary_id})),
+          update: [
+            set: [
+              neighbor_lot_ids:
+                fragment(
+                  "ARRAY(SELECT unnest(?) EXCEPT SELECT unnest(?))",
+                  l.neighbor_lot_ids,
+                  type(^deleted_ids, {:array, :binary_id})
+                )
+            ]
+          ]
+        )
+        |> Repo.update_all([])
+
+        {count, _} =
+          from(l in Lot,
+            where: l.building_id == ^building_id and l.floor == ^floor
+          )
+          |> Repo.delete_all()
+
+        count
+      end)
+    end
+  end
+
+  @doc """
+  Vide la cartographie : supprime TOUS les lots d'un bâtiment.
+
+  Action de réinitialisation à utiliser quand le grid généré ne
+  ressemble en rien à la réalité et que le syndic préfère repartir
+  de zéro plutôt que de bricoler lot par lot. À gater côté UI par
+  une confirmation forte (retape du nom du bâtiment).
+
+  Aucun nettoyage `neighbor_lot_ids` nécessaire — toutes les lignes
+  partent. Les FK BDD nilifient les `primary_lot_id` des membres
+  et suppriment les réservations.
+
+  Renvoie `{:ok, count}` (nombre de lots supprimés).
+  """
+  def delete_all_lots(%Building{id: building_id}) do
+    {count, _} =
+      from(l in Lot, where: l.building_id == ^building_id)
+      |> Repo.delete_all()
+
+    {:ok, count}
+  end
+
+  @doc """
+  Pose ou retire l'étiquette personnalisée d'un étage du bâtiment.
+
+  - `label = "..."` : enregistre l'override (`floor_labels["3"] = "..."`).
+  - `label = nil` ou `""` : retire l'override (le frontend retombera sur
+    l'étiquette calculée par défaut depuis l'entier `floor`).
+
+  La clé est stringifiée — le champ `floor_labels` est un :map sérialisé
+  en JSONB côté Postgres, donc les clés sont obligatoirement des strings.
+  """
+  def set_floor_label(%Building{} = building, floor, label) when is_integer(floor) do
+    key = Integer.to_string(floor)
+    trimmed = if is_binary(label), do: String.trim(label), else: nil
+
+    new_labels =
+      cond do
+        trimmed in [nil, ""] -> Map.delete(building.floor_labels || %{}, key)
+        true -> Map.put(building.floor_labels || %{}, key, trimmed)
+      end
+
+    building
+    |> Building.floor_labels_changeset(new_labels)
+    |> Repo.update()
   end
 
   defp to_int(value, opts \\ [])

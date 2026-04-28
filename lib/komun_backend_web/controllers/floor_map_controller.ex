@@ -49,6 +49,9 @@ defmodule KomunBackendWeb.FloorMapController do
 
       members_by_lot = Enum.group_by(members, & &1.primary_lot_id)
 
+      building = Buildings.get_building!(building_id)
+      floor_labels = building.floor_labels || %{}
+
       payload =
         lots
         |> Enum.group_by(& &1.floor)
@@ -56,6 +59,7 @@ defmodule KomunBackendWeb.FloorMapController do
         |> Enum.map(fn {floor, floor_lots} ->
           %{
             floor: floor,
+            custom_label: floor && Map.get(floor_labels, Integer.to_string(floor)),
             lots: Enum.map(floor_lots, &lot_json(&1, lots, members_by_lot))
           }
         end)
@@ -132,6 +136,132 @@ defmodule KomunBackendWeb.FloorMapController do
   defp humanize_error(:too_many_lots_per_floor), do: "Maximum 999 logements par étage."
   defp humanize_error(:too_many_lots_total), do: "Maximum 1000 logements générés en une fois."
   defp humanize_error(_), do: "Génération impossible."
+
+  # DELETE /api/v1/lots/:id
+  #
+  # Supprime un lot du bâtiment (typiquement quand le grid généré a créé
+  # plus de logements que la réalité — RDC plus petit, par exemple).
+  # Le service `Buildings.delete_lot/1` gère le nettoyage des références
+  # croisées (overrides d'adjacence, neighbor_lot_ids, primary_lot_id).
+  def delete(conn, %{"id" => lot_id}) do
+    user = Guardian.Plug.current_resource(conn)
+    lot = Repo.get!(Lot, lot_id)
+
+    with :ok <-
+           authorize(
+             conn,
+             lot.building_id,
+             user,
+             @edit_roles,
+             "Suppression réservée au syndic et super_admin"
+           ) do
+      case Buildings.delete_lot(lot) do
+        {:ok, _deleted} ->
+          show(conn, %{"building_id" => lot.building_id})
+
+        {:error, cs} ->
+          conn |> put_status(:unprocessable_entity) |> json(%{errors: format_errors(cs)})
+      end
+    end
+  end
+
+  # DELETE /api/v1/buildings/:building_id/floors/:floor
+  #
+  # Supprime tous les lots d'un étage entier — utile quand le grid
+  # généré a créé un étage de trop (ex. user a mis "5 étages" au lieu
+  # de "4"). Idempotent : 0 lot supprimé renvoie quand même 200 avec le
+  # /floor-map à jour.
+  def delete_floor(conn, %{"building_id" => building_id, "floor" => floor_str}) do
+    user = Guardian.Plug.current_resource(conn)
+    building = Buildings.get_building!(building_id)
+
+    with :ok <-
+           authorize(
+             conn,
+             building_id,
+             user,
+             @edit_roles,
+             "Suppression réservée au syndic et super_admin"
+           ) do
+      case Integer.parse(floor_str || "") do
+        {floor, ""} ->
+          case Buildings.delete_floor(building, floor) do
+            {:ok, _count} ->
+              show(conn, %{"building_id" => building_id})
+
+            {:error, _reason} ->
+              conn
+              |> put_status(:unprocessable_entity)
+              |> json(%{error: "Suppression impossible."})
+          end
+
+        _ ->
+          conn |> put_status(:bad_request) |> json(%{error: "Étage invalide."})
+      end
+    end
+  end
+
+  # DELETE /api/v1/buildings/:building_id/lots
+  #
+  # Vide intégralement la cartographie d'un bâtiment. Action très
+  # destructive — l'UI doit imposer une confirmation forte (retape du
+  # nom du bâtiment). Côté backend on se contente du gating role.
+  def delete_all_lots(conn, %{"building_id" => building_id}) do
+    user = Guardian.Plug.current_resource(conn)
+    building = Buildings.get_building!(building_id)
+
+    with :ok <-
+           authorize(
+             conn,
+             building_id,
+             user,
+             @edit_roles,
+             "Réinitialisation réservée au syndic et super_admin"
+           ) do
+      {:ok, _count} = Buildings.delete_all_lots(building)
+      show(conn, %{"building_id" => building_id})
+    end
+  end
+
+  # PUT /api/v1/buildings/:building_id/floors/:floor/label
+  #
+  # Pose ou retire l'étiquette personnalisée d'un étage. Body :
+  # `%{"label" => "..."}` pour set, `%{"label" => null}` ou `%{"label" => ""}`
+  # pour clear (retomber sur l'étiquette calculée par défaut côté front).
+  def set_floor_label(conn, %{
+        "building_id" => building_id,
+        "floor" => floor_str
+      } = params) do
+    user = Guardian.Plug.current_resource(conn)
+    building = Buildings.get_building!(building_id)
+
+    with :ok <-
+           authorize(
+             conn,
+             building_id,
+             user,
+             @edit_roles,
+             "Édition des étiquettes réservée au syndic et super_admin"
+           ) do
+      case Integer.parse(floor_str || "") do
+        {floor, ""} ->
+          case Buildings.set_floor_label(building, floor, params["label"]) do
+            {:ok, updated} ->
+              json(conn, %{
+                data: %{floor: floor, custom_label: Map.get(updated.floor_labels, Integer.to_string(floor))}
+              })
+
+            {:error, cs} ->
+              conn
+              |> put_status(:unprocessable_entity)
+              |> json(%{errors: format_errors(cs)})
+          end
+
+        _ ->
+          conn |> put_status(:bad_request) |> json(%{error: "Étage invalide."})
+      end
+    end
+  end
 
   # GET /api/v1/lots/:id/notify-preview?subtype=water_leak
   def notify_preview(conn, %{"id" => lot_id} = params) do

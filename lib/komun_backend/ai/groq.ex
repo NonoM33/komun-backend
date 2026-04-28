@@ -21,7 +21,13 @@ defmodule KomunBackend.AI.Groq do
   @type message :: %{role: :system | :user | :assistant, content: String.t()}
 
   @spec complete(messages :: [message()], opts :: keyword()) ::
-          {:ok, %{content: String.t(), model: String.t(), usage: map()}}
+          {:ok,
+           %{
+             content: String.t(),
+             model: String.t(),
+             usage: map(),
+             finish_reason: String.t() | nil
+           }}
           | {:error, atom() | String.t()}
   def complete(messages, opts \\ []) do
     api_key = Keyword.get(opts, :api_key) || System.get_env("GROQ_API_KEY")
@@ -41,8 +47,8 @@ defmodule KomunBackend.AI.Groq do
         max_tokens: max_tokens
       }
 
-      req =
-        Req.new(
+      req_options =
+        [
           url: @endpoint,
           headers: [
             {"Authorization", "Bearer #{api_key}"},
@@ -52,10 +58,17 @@ defmodule KomunBackend.AI.Groq do
           receive_timeout: timeout,
           retry: :transient,
           max_retries: 2
-        )
+        ]
+        |> Keyword.merge(Application.get_env(:komun_backend, :groq_req_options, []))
+
+      req = Req.new(req_options)
 
       case Req.post(req) do
-        {:ok, %Req.Response{status: 200, body: %{"choices" => [%{"message" => %{"content" => content}} | _]} = payload}} ->
+        {:ok,
+         %Req.Response{
+           status: 200,
+           body: %{"choices" => [%{"message" => %{"content" => content}} = choice | _]} = payload
+         }} ->
           usage = Map.get(payload, "usage", %{})
 
           {:ok,
@@ -65,7 +78,8 @@ defmodule KomunBackend.AI.Groq do
              usage: %{
                prompt: Map.get(usage, "prompt_tokens"),
                completion: Map.get(usage, "completion_tokens")
-             }
+             },
+             finish_reason: Map.get(choice, "finish_reason")
            }}
 
         {:ok, %Req.Response{status: status, body: body}} ->
