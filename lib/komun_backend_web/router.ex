@@ -57,6 +57,13 @@ defmodule KomunBackendWeb.Router do
     put   "/me", UserController, :update_profile
     patch "/me", UserController, :update_profile
 
+    # Personal Access Tokens — pour piloter l'API depuis un script
+    # / une intégration externe (réservé conseil syndical + syndic ;
+    # gating fait dans le context `Auth.ApiTokens`).
+    get    "/me/api-tokens",     ApiTokenController, :index
+    post   "/me/api-tokens",     ApiTokenController, :create
+    delete "/me/api-tokens/:id", ApiTokenController, :delete
+
     # Organizations
     get  "/organizations/:id", OrganizationController, :show
     get  "/organizations/:id/buildings", OrganizationController, :buildings
