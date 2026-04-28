@@ -7,9 +7,14 @@ defmodule KomunBackend.Votes do
   alias KomunBackend.Projects.Project
   alias KomunBackendWeb.VotesChannel
 
+  # Les rounds de battle sont aussi stockés dans `votes` (avec `battle_id`
+  # posé). On les exclut ici parce que `/votes/:id` ne sait pas les
+  # afficher proprement — ils doivent être vus via `/battles/:id`. Sinon
+  # ils polluent l'Activité récente du dashboard avec des entrées
+  # « test — Round 2 » qui mènent dans le mur.
   def list_votes(building_id) do
     from(v in Vote,
-      where: v.building_id == ^building_id,
+      where: v.building_id == ^building_id and is_nil(v.battle_id),
       preload: [:created_by, :options, :attachments, :responses],
       order_by: [desc: v.inserted_at]
     )
