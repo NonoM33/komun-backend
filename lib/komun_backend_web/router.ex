@@ -266,6 +266,7 @@ defmodule KomunBackendWeb.Router do
     # Lecture : syndic + CS. Édition de l'adjacence : syndic + super_admin.
     # Le gating fin est dans le controller (cf. @read_roles / @edit_roles).
     get   "/buildings/:building_id/floor-map", FloorMapController, :show
+    post  "/buildings/:building_id/lots/generate", FloorMapController, :generate_lots
     patch "/lots/:id/adjacency",               FloorMapController, :update_adjacency
     put   "/lots/:id/adjacency",               FloorMapController, :update_adjacency
     get   "/lots/:id/notify-preview",          FloorMapController, :notify_preview

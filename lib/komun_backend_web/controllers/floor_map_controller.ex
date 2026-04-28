@@ -87,6 +87,52 @@ defmodule KomunBackendWeb.FloorMapController do
     end
   end
 
+  # POST /api/v1/buildings/:building_id/lots/generate
+  #
+  # Amorce les lots d'un bâtiment vide à partir de `floors` × `lots_per_floor`.
+  # Strict : refuse si le bâtiment a déjà des lots — pour éviter qu'un syndic
+  # double-clique et duplique tout par accident.
+  def generate_lots(conn, %{"building_id" => building_id} = params) do
+    user = Guardian.Plug.current_resource(conn)
+    building = Buildings.get_building!(building_id)
+
+    with :ok <- authorize(conn, building_id, user, @edit_roles,
+                          "Génération réservée au syndic et super_admin") do
+      opts = %{
+        floors: params["floors"],
+        lots_per_floor: params["lots_per_floor"],
+        start_floor: Map.get(params, "start_floor", 1)
+      }
+
+      case Buildings.generate_lots(building, opts) do
+        {:ok, _lots} ->
+          # Replay /floor-map dans la même réponse pour éviter un round-trip.
+          show(conn, %{"building_id" => building_id})
+
+        {:error, :lots_already_exist} ->
+          conn
+          |> put_status(:conflict)
+          |> json(%{error: "Ce bâtiment a déjà des logements enregistrés."})
+
+        {:error, reason} when is_atom(reason) ->
+          conn
+          |> put_status(:unprocessable_entity)
+          |> json(%{error: humanize_error(reason)})
+
+        {:error, _other} ->
+          conn
+          |> put_status(:unprocessable_entity)
+          |> json(%{error: "Génération impossible."})
+      end
+    end
+  end
+
+  defp humanize_error(:invalid_floors), do: "Nombre d'étages invalide."
+  defp humanize_error(:invalid_lots_per_floor), do: "Nombre de logements par étage invalide."
+  defp humanize_error(:too_many_lots_per_floor), do: "Maximum 999 logements par étage."
+  defp humanize_error(:too_many_lots_total), do: "Maximum 1000 logements générés en une fois."
+  defp humanize_error(_), do: "Génération impossible."
+
   # GET /api/v1/lots/:id/notify-preview?subtype=water_leak
   def notify_preview(conn, %{"id" => lot_id} = params) do
     user = Guardian.Plug.current_resource(conn)
