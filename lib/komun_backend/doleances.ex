@@ -27,27 +27,39 @@ defmodule KomunBackend.Doleances do
 
   # ── Reads ────────────────────────────────────────────────────────────────
 
-  def list_doleances(building_id, filters \\ %{}) do
+  def list_doleances(building_id, filters \\ %{}, viewer \\ nil) do
     from(d in Doleance,
       where: d.building_id == ^building_id,
       preload: [:author, :files, supports: :user],
       order_by: [desc: d.inserted_at]
     )
     |> apply_filter(:status, filters["status"])
-    |> apply_drafts_visibility(filters)
+    |> apply_drafts_visibility(building_id, viewer)
     |> Repo.all()
   end
 
   defp apply_filter(q, _field, nil), do: q
   defp apply_filter(q, :status, v), do: where(q, [d], d.status == ^v)
 
-  # Brouillons cachés par défaut.
-  defp apply_drafts_visibility(q, filters) do
-    cond do
-      filters["status"] == "brouillon" -> q
-      filters["include_drafts"] in [true, "true"] -> q
-      true -> where(q, [d], d.status != :brouillon)
+  # Brouillons :
+  # - Privilégiés (super_admin / syndic_* / CS) → visibles par défaut.
+  # - Résidents lambda → invisibles toujours.
+  defp apply_drafts_visibility(q, building_id, viewer) do
+    if doleance_privileged?(building_id, viewer) do
+      q
+    else
+      where(q, [d], d.status != :brouillon)
     end
+  end
+
+  @privileged_roles [:super_admin, :syndic_manager, :syndic_staff, :president_cs, :membre_cs]
+
+  defp doleance_privileged?(_building_id, nil), do: false
+  defp doleance_privileged?(_building_id, %User{role: :super_admin}), do: true
+
+  defp doleance_privileged?(building_id, %User{} = user) do
+    member_role = KomunBackend.Buildings.get_member_role(building_id, user.id)
+    user.role in @privileged_roles or member_role in @privileged_roles
   end
 
   def get_doleance!(id) do

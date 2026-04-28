@@ -66,14 +66,11 @@ defmodule KomunBackend.Diligences do
   defp apply_filter(q, :linked_incident_id, v),
     do: where(q, [d], d.linked_incident_id == ^v)
 
-  # Brouillons cachés par défaut.
-  defp apply_drafts_visibility(q, filters) do
-    cond do
-      filters["status"] == "brouillon" -> q
-      filters["include_drafts"] in [true, "true"] -> q
-      true -> where(q, [d], d.status != :brouillon)
-    end
-  end
+  # Diligences = 100% admin-only (controller rejette les non-privilégiés
+  # via `authorize_privileged/3`). Tous les appelants ici peuvent donc
+  # voir les brouillons. On garde la fonction pour symétrie avec les
+  # contextes Incidents/Doleances qui ont une UX mixte.
+  defp apply_drafts_visibility(q, _filters), do: q
 
   defp step_order, do: from(s in DiligenceStep, order_by: [asc: s.step_number])
   defp file_order, do: from(f in DiligenceFile, order_by: [desc: f.inserted_at])

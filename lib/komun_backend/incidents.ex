@@ -49,13 +49,17 @@ defmodule KomunBackend.Incidents do
   defp apply_filter(q, :status, v), do: where(q, [i], i.status == ^v)
   defp apply_filter(q, :severity, v), do: where(q, [i], i.severity == ^v)
 
-  # Brouillons cachés par défaut. `?status=brouillon` ou
-  # `?include_drafts=true` (réservé aux privilégiés) les exposent.
-  defp apply_drafts_visibility(q, filters, building_id, viewer) do
-    cond do
-      filters["status"] == "brouillon" -> q
-      filters["include_drafts"] in [true, "true"] and privileged?(building_id, viewer) -> q
-      true -> where(q, [i], i.status != :brouillon)
+  # Brouillons :
+  # - Privilégiés (super_admin / syndic_* / président_cs / membre_cs)
+  #   → visibles **par défaut** dans la liste, comme un statut normal.
+  #   C'est le seul moyen pour eux de valider les dossiers ingérés.
+  # - Résidents lambda → JAMAIS visibles, même si filtre explicite.
+  #   Un brouillon est un dossier non validé, il ne doit pas fuiter.
+  defp apply_drafts_visibility(q, _filters, building_id, viewer) do
+    if privileged?(building_id, viewer) do
+      q
+    else
+      where(q, [i], i.status != :brouillon)
     end
   end
 
