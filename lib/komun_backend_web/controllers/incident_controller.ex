@@ -1,7 +1,7 @@
 defmodule KomunBackendWeb.IncidentController do
   use KomunBackendWeb, :controller
 
-  alias KomunBackend.{Buildings, Incidents}
+  alias KomunBackend.{Buildings, Incidents, Projects}
   alias KomunBackend.Incidents.IncidentFile
   alias KomunBackend.Auth.Guardian
 
@@ -41,7 +41,18 @@ defmodule KomunBackendWeb.IncidentController do
           conn |> put_status(:not_found) |> json(%{error: "Not found"}) |> halt()
 
         true ->
-          json(conn, %{data: incident_json(incident, privileged?)})
+          # `linked_projects` n'est inclus que sur la fiche détaillée
+          # (pas sur l'index liste) : ça évite un N+1 sur la liste
+          # tout en permettant d'afficher « N devis demandés » sur
+          # la page incident.
+          linked_projects = Projects.list_projects_linked_to_incident(incident.id)
+
+          payload =
+            incident
+            |> incident_json(privileged?)
+            |> Map.put(:linked_projects, Enum.map(linked_projects, &linked_project_brief/1))
+
+          json(conn, %{data: payload})
       end
     end
   end
@@ -467,6 +478,24 @@ defmodule KomunBackendWeb.IncidentController do
 
   defp maybe_user(nil), do: nil
   defp maybe_user(u), do: %{id: u.id, email: u.email, first_name: u.first_name, last_name: u.last_name, avatar_url: u.avatar_url}
+
+  # Brief utilisé pour la section « Devis demandés » de la fiche dossier.
+  # On expose juste assez pour afficher la liste (titre, statut, nombre
+  # de devis collectés). Le détail complet passe par `/projects/:id`.
+  defp linked_project_brief(p) do
+    devis_count =
+      case p.devis do
+        %Ecto.Association.NotLoaded{} -> 0
+        list when is_list(list) -> length(list)
+      end
+
+    %{
+      id: p.id,
+      title: p.title,
+      status: p.status,
+      devis_count: devis_count
+    }
+  end
 
   defp format_errors(cs) do
     Ecto.Changeset.traverse_errors(cs, fn {msg, opts} ->
