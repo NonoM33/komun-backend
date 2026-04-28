@@ -274,6 +274,7 @@ defmodule KomunBackendWeb.Router do
     post  "/buildings/:building_id/lots/generate", FloorMapController, :generate_lots
     patch "/lots/:id/adjacency",               FloorMapController, :update_adjacency
     put   "/lots/:id/adjacency",               FloorMapController, :update_adjacency
+    delete "/lots/:id",                         FloorMapController, :delete
     get   "/lots/:id/notify-preview",          FloorMapController, :notify_preview
 
     # Tickets de feedback produit (page « Améliorations »).

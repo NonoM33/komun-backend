@@ -339,4 +339,105 @@ defmodule KomunBackendWeb.FloorMapControllerTest do
              |> json_response(403)
     end
   end
+
+  describe "DELETE /lots/:id" do
+    test "le syndic supprime un lot et la réponse rejoue /floor-map sans lui",
+         %{conn: conn} do
+      r = insert_residence!()
+      b = insert_building!(r)
+      lot_1001 = insert_lot!(b, %{number: "1001", floor: 1})
+      _lot_1002 = insert_lot!(b, %{number: "1002", floor: 1})
+
+      syndic = insert_user!(:syndic_manager)
+
+      body =
+        conn
+        |> authed(syndic)
+        |> delete(~p"/api/v1/lots/#{lot_1001.id}")
+        |> json_response(200)
+
+      assert [%{"floor" => 1, "lots" => f1}] = body["data"]
+      numbers = f1 |> Enum.map(& &1["number"]) |> Enum.sort()
+      assert numbers == ["1002"]
+
+      refute Repo.get(Lot, lot_1001.id)
+    end
+
+    test "nettoie les neighbor_lot_ids des autres lots qui pointaient vers lui",
+         %{conn: conn} do
+      r = insert_residence!()
+      b = insert_building!(r)
+      lot_a = insert_lot!(b, %{number: "1001", floor: 1})
+      lot_b = insert_lot!(b, %{number: "1002", floor: 1})
+      lot_c = insert_lot!(b, %{number: "1003", floor: 1})
+
+      lot_b
+      |> Ecto.Changeset.change(neighbor_lot_ids: [lot_a.id, lot_c.id])
+      |> Repo.update!()
+
+      syndic = insert_user!(:syndic_manager)
+
+      conn
+      |> authed(syndic)
+      |> delete(~p"/api/v1/lots/#{lot_a.id}")
+      |> json_response(200)
+
+      assert Repo.get(Lot, lot_b.id).neighbor_lot_ids == [lot_c.id]
+    end
+
+    test "nilify les overrides d'adjacence des lots qui pointaient vers lui",
+         %{conn: conn} do
+      r = insert_residence!()
+      b = insert_building!(r)
+      lot_below = insert_lot!(b, %{number: "1001", floor: 1})
+      lot_above = insert_lot!(b, %{number: "2001", floor: 2})
+
+      lot_above
+      |> Ecto.Changeset.change(unit_below_lot_id: lot_below.id)
+      |> Repo.update!()
+
+      syndic = insert_user!(:syndic_manager)
+
+      conn
+      |> authed(syndic)
+      |> delete(~p"/api/v1/lots/#{lot_below.id}")
+      |> json_response(200)
+
+      refute Repo.get(Lot, lot_above.id).unit_below_lot_id
+    end
+
+    test "détache (nilify) le primary_lot des membres rattachés à ce lot",
+         %{conn: conn} do
+      r = insert_residence!()
+      b = insert_building!(r)
+      lot = insert_lot!(b, %{number: "1001", floor: 1})
+
+      user = insert_user!()
+      member = link_member!(b.id, user, lot)
+
+      syndic = insert_user!(:syndic_manager)
+
+      conn
+      |> authed(syndic)
+      |> delete(~p"/api/v1/lots/#{lot.id}")
+      |> json_response(200)
+
+      refute Repo.reload!(member).primary_lot_id
+    end
+
+    test "403 pour un membre du CS (édition réservée au syndic)", %{conn: conn} do
+      r = insert_residence!()
+      b = insert_building!(r)
+      lot = insert_lot!(b, %{number: "1001", floor: 1})
+      user = insert_user!()
+      {:ok, _} = Buildings.add_member(b.id, user.id, :membre_cs)
+
+      assert conn
+             |> authed(user)
+             |> delete(~p"/api/v1/lots/#{lot.id}")
+             |> json_response(403)
+
+      assert Repo.get(Lot, lot.id)
+    end
+  end
 end
