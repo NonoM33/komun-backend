@@ -343,11 +343,24 @@ defmodule KomunBackendWeb.DiligenceController do
       mise_en_demeure_letter: d.mise_en_demeure_letter,
       building_id: d.building_id,
       linked_incident_id: d.linked_incident_id,
+      linked_incident: maybe_incident_brief(d.linked_incident),
       created_by: maybe_user(d.created_by),
       steps: steps,
       files: files,
       inserted_at: d.inserted_at,
       updated_at: d.updated_at
+    }
+  end
+
+  defp maybe_incident_brief(%Ecto.Association.NotLoaded{}), do: nil
+  defp maybe_incident_brief(nil), do: nil
+
+  defp maybe_incident_brief(inc) do
+    %{
+      id: inc.id,
+      title: inc.title,
+      status: inc.status,
+      severity: inc.severity
     }
   end
 

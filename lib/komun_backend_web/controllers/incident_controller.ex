@@ -1,7 +1,7 @@
 defmodule KomunBackendWeb.IncidentController do
   use KomunBackendWeb, :controller
 
-  alias KomunBackend.{Buildings, Incidents, Projects}
+  alias KomunBackend.{Buildings, Incidents, Projects, Doleances, Diligences}
   alias KomunBackend.Incidents.IncidentFile
   alias KomunBackend.Auth.Guardian
 
@@ -46,11 +46,20 @@ defmodule KomunBackendWeb.IncidentController do
           # tout en permettant d'afficher « N devis demandés » sur
           # la page incident.
           linked_projects = Projects.list_projects_linked_to_incident(incident.id)
+          linked_doleances = list_visible_doleances(incident.id, privileged?)
+
+          # Diligences = 100% CS-only : on ne les expose dans le payload
+          # incident que si l'appelant est lui-même privilégié. Pour un
+          # voisin lambda, le champ est simplement absent.
+          linked_diligences =
+            if privileged?, do: Diligences.list_by_incident(incident.id), else: []
 
           payload =
             incident
             |> incident_json(privileged?)
             |> Map.put(:linked_projects, Enum.map(linked_projects, &linked_project_brief/1))
+            |> Map.put(:linked_doleances, Enum.map(linked_doleances, &linked_doleance_brief/1))
+            |> Map.put(:linked_diligences, Enum.map(linked_diligences, &linked_diligence_brief/1))
 
           json(conn, %{data: payload})
       end
@@ -478,6 +487,33 @@ defmodule KomunBackendWeb.IncidentController do
 
   defp maybe_user(nil), do: nil
   defp maybe_user(u), do: %{id: u.id, email: u.email, first_name: u.first_name, last_name: u.last_name, avatar_url: u.avatar_url}
+
+  # Doléances liées à un incident. Pour un voisin lambda on ne montre
+  # pas les brouillons (cohérent avec la liste publique des doléances).
+  defp list_visible_doleances(incident_id, privileged?) do
+    Doleances.list_by_incident(incident_id)
+    |> Enum.reject(fn d -> not privileged? and d.status == :brouillon end)
+  end
+
+  defp linked_doleance_brief(d) do
+    %{
+      id: d.id,
+      title: d.title,
+      status: d.status,
+      severity: d.severity,
+      category: d.category,
+      inserted_at: d.inserted_at
+    }
+  end
+
+  defp linked_diligence_brief(d) do
+    %{
+      id: d.id,
+      title: d.title,
+      status: d.status,
+      inserted_at: d.inserted_at
+    }
+  end
 
   # Brief utilisé pour la section « Devis demandés » de la fiche dossier.
   # On expose juste assez pour afficher la liste (titre, statut, nombre

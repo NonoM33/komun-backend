@@ -30,16 +30,36 @@ defmodule KomunBackend.Doleances do
   def list_doleances(building_id, filters \\ %{}, viewer \\ nil) do
     from(d in Doleance,
       where: d.building_id == ^building_id,
-      preload: [:author, :files, supports: :user],
+      preload: [:author, :files, :linked_incident, supports: :user],
       order_by: [desc: d.inserted_at]
     )
     |> apply_filter(:status, filters["status"])
+    |> apply_filter(:linked_incident_id, filters["linked_incident_id"])
     |> apply_drafts_visibility(building_id, viewer)
     |> Repo.all()
   end
 
+  @doc """
+  Récupère les doléances rattachées à un incident donné. Utilisé par la
+  fiche incident pour afficher « Cet incident a généré N doléance(s) ».
+  Pas de filtre de visibilité ici : c'est l'appelant (controller) qui
+  doit gater selon le rôle.
+  """
+  def list_by_incident(incident_id) do
+    from(d in Doleance,
+      where: d.linked_incident_id == ^incident_id,
+      preload: [:author],
+      order_by: [desc: d.inserted_at]
+    )
+    |> Repo.all()
+  end
+
   defp apply_filter(q, _field, nil), do: q
+  defp apply_filter(q, _field, ""), do: q
   defp apply_filter(q, :status, v), do: where(q, [d], d.status == ^v)
+
+  defp apply_filter(q, :linked_incident_id, v),
+    do: where(q, [d], d.linked_incident_id == ^v)
 
   # Brouillons :
   # - Privilégiés (super_admin / syndic_* / CS) → visibles par défaut.
@@ -64,7 +84,7 @@ defmodule KomunBackend.Doleances do
 
   def get_doleance!(id) do
     Repo.get!(Doleance, id)
-    |> Repo.preload([:author, :files, supports: :user])
+    |> Repo.preload([:author, :files, :linked_incident, supports: :user])
   end
 
   def get_doleance(id), do: Repo.get(Doleance, id)
@@ -89,8 +109,11 @@ defmodule KomunBackend.Doleances do
     attrs = Map.merge(attrs, %{"building_id" => building_id, "author_id" => author_id})
 
     with {:ok, doleance} <- %Doleance{} |> Doleance.changeset(attrs) |> Repo.insert() do
-      record_event(doleance.id, author_id, :created, %{})
-      doleance = Repo.preload(doleance, [:author, :files, supports: :user])
+      record_event(doleance.id, author_id, :created, %{
+        linked_incident_id: doleance.linked_incident_id
+      })
+
+      doleance = Repo.preload(doleance, [:author, :files, :linked_incident, supports: :user])
 
       # Brouillons : pas de broadcast temps réel — les autres résidents
       # ne doivent voir une doléance qu'après validation admin.
@@ -113,7 +136,7 @@ defmodule KomunBackend.Doleances do
         })
       end
 
-      updated = Repo.preload(updated, [:author, :files, supports: :user])
+      updated = Repo.preload(updated, [:author, :files, :linked_incident, supports: :user])
       BuildingChannel.broadcast_doleance(updated.building_id, updated)
       {:ok, updated}
     end
@@ -274,7 +297,7 @@ defmodule KomunBackend.Doleances do
         :ok
 
       d ->
-        d = Repo.preload(d, [:author, :files, supports: :user])
+        d = Repo.preload(d, [:author, :files, :linked_incident, supports: :user])
         BuildingChannel.broadcast_doleance(d.building_id, d)
     end
   end
