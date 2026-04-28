@@ -464,6 +464,85 @@ defmodule KomunBackend.Buildings do
     end)
   end
 
+  @doc """
+  Supprime tous les lots d'un étage donné dans un bâtiment.
+
+  Utilisé quand un étage entier a été généré par erreur — typiquement
+  l'utilisateur a tapé "5" au lieu de "4" dans le formulaire et veut
+  retirer le 5e étage en entier sans le faire lot par lot.
+
+  Mêmes garanties de nettoyage que `delete_lot/1` :
+  - on rince `neighbor_lot_ids` des autres lots du bâtiment qui
+    référenceraient un des lots supprimés (Postgres `array_diff` via
+    `array(... EXCEPT ...)`),
+  - les FK BDD font le reste (overrides nilifiés, primary_lot nilifié,
+    réservations supprimées).
+
+  Renvoie `{:ok, count}` (nombre de lots supprimés, possiblement 0) ou
+  `{:error, reason}`.
+  """
+  def delete_floor(%Building{id: building_id}, floor) when is_integer(floor) do
+    deleted_ids =
+      from(l in Lot,
+        where: l.building_id == ^building_id and l.floor == ^floor,
+        select: l.id
+      )
+      |> Repo.all()
+
+    if deleted_ids == [] do
+      {:ok, 0}
+    else
+      Repo.transaction(fn ->
+        from(l in Lot,
+          where:
+            l.building_id == ^building_id and l.floor != ^floor and
+              fragment("? && ?", l.neighbor_lot_ids, type(^deleted_ids, {:array, :binary_id})),
+          update: [
+            set: [
+              neighbor_lot_ids:
+                fragment(
+                  "ARRAY(SELECT unnest(?) EXCEPT SELECT unnest(?))",
+                  l.neighbor_lot_ids,
+                  type(^deleted_ids, {:array, :binary_id})
+                )
+            ]
+          ]
+        )
+        |> Repo.update_all([])
+
+        {count, _} =
+          from(l in Lot,
+            where: l.building_id == ^building_id and l.floor == ^floor
+          )
+          |> Repo.delete_all()
+
+        count
+      end)
+    end
+  end
+
+  @doc """
+  Vide la cartographie : supprime TOUS les lots d'un bâtiment.
+
+  Action de réinitialisation à utiliser quand le grid généré ne
+  ressemble en rien à la réalité et que le syndic préfère repartir
+  de zéro plutôt que de bricoler lot par lot. À gater côté UI par
+  une confirmation forte (retape du nom du bâtiment).
+
+  Aucun nettoyage `neighbor_lot_ids` nécessaire — toutes les lignes
+  partent. Les FK BDD nilifient les `primary_lot_id` des membres
+  et suppriment les réservations.
+
+  Renvoie `{:ok, count}` (nombre de lots supprimés).
+  """
+  def delete_all_lots(%Building{id: building_id}) do
+    {count, _} =
+      from(l in Lot, where: l.building_id == ^building_id)
+      |> Repo.delete_all()
+
+    {:ok, count}
+  end
+
   defp to_int(value, opts \\ [])
   defp to_int(nil, opts), do: Keyword.get(opts, :default)
   defp to_int(value, _opts) when is_integer(value), do: value

@@ -161,6 +161,64 @@ defmodule KomunBackendWeb.FloorMapController do
     end
   end
 
+  # DELETE /api/v1/buildings/:building_id/floors/:floor
+  #
+  # Supprime tous les lots d'un étage entier — utile quand le grid
+  # généré a créé un étage de trop (ex. user a mis "5 étages" au lieu
+  # de "4"). Idempotent : 0 lot supprimé renvoie quand même 200 avec le
+  # /floor-map à jour.
+  def delete_floor(conn, %{"building_id" => building_id, "floor" => floor_str}) do
+    user = Guardian.Plug.current_resource(conn)
+    building = Buildings.get_building!(building_id)
+
+    with :ok <-
+           authorize(
+             conn,
+             building_id,
+             user,
+             @edit_roles,
+             "Suppression réservée au syndic et super_admin"
+           ) do
+      case Integer.parse(floor_str || "") do
+        {floor, ""} ->
+          case Buildings.delete_floor(building, floor) do
+            {:ok, _count} ->
+              show(conn, %{"building_id" => building_id})
+
+            {:error, _reason} ->
+              conn
+              |> put_status(:unprocessable_entity)
+              |> json(%{error: "Suppression impossible."})
+          end
+
+        _ ->
+          conn |> put_status(:bad_request) |> json(%{error: "Étage invalide."})
+      end
+    end
+  end
+
+  # DELETE /api/v1/buildings/:building_id/lots
+  #
+  # Vide intégralement la cartographie d'un bâtiment. Action très
+  # destructive — l'UI doit imposer une confirmation forte (retape du
+  # nom du bâtiment). Côté backend on se contente du gating role.
+  def delete_all_lots(conn, %{"building_id" => building_id}) do
+    user = Guardian.Plug.current_resource(conn)
+    building = Buildings.get_building!(building_id)
+
+    with :ok <-
+           authorize(
+             conn,
+             building_id,
+             user,
+             @edit_roles,
+             "Réinitialisation réservée au syndic et super_admin"
+           ) do
+      {:ok, _count} = Buildings.delete_all_lots(building)
+      show(conn, %{"building_id" => building_id})
+    end
+  end
+
   # GET /api/v1/lots/:id/notify-preview?subtype=water_leak
   def notify_preview(conn, %{"id" => lot_id} = params) do
     user = Guardian.Plug.current_resource(conn)
