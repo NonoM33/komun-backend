@@ -84,34 +84,44 @@ defmodule KomunBackend.Incidents do
     with {:ok, incident} <- %Incident{} |> Incident.changeset(attrs) |> Repo.insert() do
       incident = Repo.preload(incident, [:reporter, :assignee, :files])
 
-      if incident.visibility == :council_only do
-        # Confidentialité maximale : on ne diffuse pas via le canal partagé
-        # du bâtiment (sinon les autres résidents recevraient l'event), on
-        # ne notifie que les membres privilégiés et on saute l'IA — un LLM
-        # qui paraphrase une plainte sensible est un risque de fuite.
-        notify_privileged_members(
-          building_id,
-          "Nouveau signalement confidentiel",
-          "Un signalement a été envoyé au conseil syndical.",
-          %{type: "incident", incident_id: incident.id, building_id: building_id}
-        )
-      else
-        BuildingChannel.broadcast_incident(building_id, incident)
+      cond do
+        # Brouillon : aucun side-effect. Un dossier non validé ne doit
+        # ni notifier les voisins, ni consommer du budget Groq, ni
+        # apparaître dans le canal temps réel partagé. Validation admin
+        # → bascule en :open via update_incident, qui peut alors
+        # déclencher les notifs si besoin.
+        incident.status == :brouillon ->
+          :ok
 
-        Notifications.send_to_building(
-          building_id,
-          "Nouvel incident signalé",
-          incident.title,
-          %{type: "incident", incident_id: incident.id, building_id: building_id}
-        )
+        incident.visibility == :council_only ->
+          # Confidentialité maximale : on ne diffuse pas via le canal partagé
+          # du bâtiment (sinon les autres résidents recevraient l'event), on
+          # ne notifie que les membres privilégiés et on saute l'IA — un LLM
+          # qui paraphrase une plainte sensible est un risque de fuite.
+          notify_privileged_members(
+            building_id,
+            "Nouveau signalement confidentiel",
+            "Un signalement a été envoyé au conseil syndical.",
+            %{type: "incident", incident_id: incident.id, building_id: building_id}
+          )
 
-        # Fire-and-forget AI triage. Groq fills ai_answer on the incident and
-        # the resident polls for the update. Failure leaves the incident as-is.
-        KomunBackend.AI.Triage.triage_incident_async(incident)
+        true ->
+          BuildingChannel.broadcast_incident(building_id, incident)
 
-        # Notifications ciblées de voisinage (water_leak → en dessous,
-        # noise → voisins de palier). Pas de notif si subtype absent.
-        maybe_notify_neighbors(incident)
+          Notifications.send_to_building(
+            building_id,
+            "Nouvel incident signalé",
+            incident.title,
+            %{type: "incident", incident_id: incident.id, building_id: building_id}
+          )
+
+          # Fire-and-forget AI triage. Groq fills ai_answer on the incident and
+          # the resident polls for the update. Failure leaves the incident as-is.
+          KomunBackend.AI.Triage.triage_incident_async(incident)
+
+          # Notifications ciblées de voisinage (water_leak → en dessous,
+          # noise → voisins de palier). Pas de notif si subtype absent.
+          maybe_notify_neighbors(incident)
       end
 
       {:ok, incident}

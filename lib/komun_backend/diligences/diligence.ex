@@ -54,6 +54,7 @@ defmodule KomunBackend.Diligences.Diligence do
     |> cast(attrs, [
       :title,
       :description,
+      :status,
       :source_type,
       :source_label,
       :building_id,

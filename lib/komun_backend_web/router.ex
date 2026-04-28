@@ -314,5 +314,11 @@ defmodule KomunBackendWeb.Router do
     post   "/buildings/:id/members",                  AdminController, :add_member
     put    "/buildings/:id/members/:user_id/role",    AdminController, :update_member_role
     delete "/buildings/:id/members/:user_id",         AdminController, :remove_member
+
+    # Ingestion programmatique de dossiers (incidents / doléances /
+    # diligences) déjà classifiés par un agent externe. Tous les
+    # dossiers créés démarrent en `:brouillon` — validation humaine
+    # imposée. Voir `AdminCasesController` pour le format de payload.
+    post   "/buildings/:building_id/cases/batch",     AdminCasesController, :batch
   end
 end
