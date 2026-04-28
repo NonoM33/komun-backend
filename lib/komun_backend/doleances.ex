@@ -79,7 +79,13 @@ defmodule KomunBackend.Doleances do
     with {:ok, doleance} <- %Doleance{} |> Doleance.changeset(attrs) |> Repo.insert() do
       record_event(doleance.id, author_id, :created, %{})
       doleance = Repo.preload(doleance, [:author, :files, supports: :user])
-      BuildingChannel.broadcast_doleance(building_id, doleance)
+
+      # Brouillons : pas de broadcast temps réel — les autres résidents
+      # ne doivent voir une doléance qu'après validation admin.
+      if doleance.status != :brouillon do
+        BuildingChannel.broadcast_doleance(building_id, doleance)
+      end
+
       {:ok, doleance}
     end
   end
