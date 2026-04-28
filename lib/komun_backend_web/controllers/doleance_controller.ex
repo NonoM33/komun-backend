@@ -14,8 +14,10 @@ defmodule KomunBackendWeb.DoleanceController do
 
   # GET /api/v1/buildings/:building_id/doleances
   def index(conn, %{"building_id" => building_id} = params) do
+    user = Guardian.Plug.current_resource(conn)
+
     with :ok <- authorize_building(conn, building_id) do
-      doleances = Doleances.list_doleances(building_id, params)
+      doleances = Doleances.list_doleances(building_id, params, user)
       json(conn, %{data: Enum.map(doleances, &doleance_json/1)})
     end
   end
