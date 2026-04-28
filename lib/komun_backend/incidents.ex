@@ -305,14 +305,21 @@ defmodule KomunBackend.Incidents do
     attrs = Map.merge(attrs, %{"incident_id" => incident_id, "author_id" => author_id})
 
     with {:ok, comment} <- %IncidentComment{} |> IncidentComment.changeset(attrs) |> Repo.insert() do
-      incident = get_incident!(incident_id)
+      # `is_internal: true` = note privée du syndic / import historique
+      # (skill `komun-ingest`, ingestion email Resend) → on ne pousse pas
+      # de notification aux résidents : ils ont déjà reçu ces messages
+      # hors plateforme. Sans ce gating, importer 30 emails archivés
+      # déclencherait 30 pushes inutiles.
+      unless comment.is_internal do
+        incident = get_incident!(incident_id)
 
-      Notifications.send_to_building(
-        incident.building_id,
-        "Nouvelle réponse à un incident",
-        incident.title,
-        %{type: "incident_comment", incident_id: incident_id, building_id: incident.building_id}
-      )
+        Notifications.send_to_building(
+          incident.building_id,
+          "Nouvelle réponse à un incident",
+          incident.title,
+          %{type: "incident_comment", incident_id: incident_id, building_id: incident.building_id}
+        )
+      end
 
       {:ok, comment}
     end
