@@ -275,6 +275,14 @@ defmodule KomunBackendWeb.Router do
     patch "/lots/:id/adjacency",               FloorMapController, :update_adjacency
     put   "/lots/:id/adjacency",               FloorMapController, :update_adjacency
     get   "/lots/:id/notify-preview",          FloorMapController, :notify_preview
+
+    # Tickets de feedback produit (page « Améliorations »).
+    # Ressource globale, pas scopée à un bâtiment : c'est du retour
+    # à l'équipe Komun. L'auteur ne voit que ses propres tickets ;
+    # les super_admin passent par /admin/improvement_tickets.
+    get  "/improvement_tickets",     ImprovementTicketController, :index
+    get  "/improvement_tickets/:id", ImprovementTicketController, :show
+    post "/improvement_tickets",     ImprovementTicketController, :create
   end
 
   # Webhook Stripe — endpoint public (signature vérifiée dans le controller).
@@ -326,5 +334,11 @@ defmodule KomunBackendWeb.Router do
     # dossiers créés démarrent en `:brouillon` — validation humaine
     # imposée. Voir `AdminCasesController` pour le format de payload.
     post   "/buildings/:building_id/cases/batch",     AdminCasesController, :batch
+
+    # Console feedback produit — voir
+    # `KomunBackendWeb.AdminImprovementTicketController`.
+    get   "/improvement_tickets",      AdminImprovementTicketController, :index
+    patch "/improvement_tickets/:id",  AdminImprovementTicketController, :update
+    put   "/improvement_tickets/:id",  AdminImprovementTicketController, :update
   end
 end
