@@ -133,6 +133,34 @@ defmodule KomunBackendWeb.FloorMapController do
   defp humanize_error(:too_many_lots_total), do: "Maximum 1000 logements générés en une fois."
   defp humanize_error(_), do: "Génération impossible."
 
+  # DELETE /api/v1/lots/:id
+  #
+  # Supprime un lot du bâtiment (typiquement quand le grid généré a créé
+  # plus de logements que la réalité — RDC plus petit, par exemple).
+  # Le service `Buildings.delete_lot/1` gère le nettoyage des références
+  # croisées (overrides d'adjacence, neighbor_lot_ids, primary_lot_id).
+  def delete(conn, %{"id" => lot_id}) do
+    user = Guardian.Plug.current_resource(conn)
+    lot = Repo.get!(Lot, lot_id)
+
+    with :ok <-
+           authorize(
+             conn,
+             lot.building_id,
+             user,
+             @edit_roles,
+             "Suppression réservée au syndic et super_admin"
+           ) do
+      case Buildings.delete_lot(lot) do
+        {:ok, _deleted} ->
+          show(conn, %{"building_id" => lot.building_id})
+
+        {:error, cs} ->
+          conn |> put_status(:unprocessable_entity) |> json(%{errors: format_errors(cs)})
+      end
+    end
+  end
+
   # GET /api/v1/lots/:id/notify-preview?subtype=water_leak
   def notify_preview(conn, %{"id" => lot_id} = params) do
     user = Guardian.Plug.current_resource(conn)

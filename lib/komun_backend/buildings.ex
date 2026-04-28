@@ -421,6 +421,49 @@ defmodule KomunBackend.Buildings do
     end
   end
 
+  @doc """
+  Supprime un `Lot` du bâtiment.
+
+  Utilisé par `/admin/floor-map` quand le grid généré ne correspond pas
+  exactement à la réalité — typiquement un RDC qui a moins de logements
+  que les étages courants, ou une cellule "fantôme" créée par la
+  génération automatique.
+
+  Cascade BDD :
+  - `building_members.primary_lot_id` → `nilify_all` (le membre reste,
+    il perd juste son rattachement à ce lot).
+  - `lots.unit_below_lot_id` / `unit_above_lot_id` → `nilify_all` (les
+    overrides d'adjacence pointant vers ce lot redeviennent vides).
+  - `reservations.lot_id` → `delete_all` (les résas sur ce lot tombent —
+    pertinent pour les places de parking supprimées).
+
+  Nettoyage manuel : `neighbor_lot_ids` (array de FK sans contrainte BDD)
+  est rincé sur les autres lots du même bâtiment qui pourraient encore
+  référencer ce lot — sinon l'`Adjacency` continuerait à essayer de
+  notifier un lot mort.
+  """
+  def delete_lot(%Lot{id: lot_id, building_id: building_id} = lot) do
+    Repo.transaction(fn ->
+      from(l in Lot,
+        where:
+          l.building_id == ^building_id and
+            fragment("? = ANY(?)", type(^lot_id, :binary_id), l.neighbor_lot_ids),
+        update: [
+          set: [
+            neighbor_lot_ids:
+              fragment("array_remove(?, ?)", l.neighbor_lot_ids, type(^lot_id, :binary_id))
+          ]
+        ]
+      )
+      |> Repo.update_all([])
+
+      case Repo.delete(lot) do
+        {:ok, deleted} -> deleted
+        {:error, cs} -> Repo.rollback(cs)
+      end
+    end)
+  end
+
   defp to_int(value, opts \\ [])
   defp to_int(nil, opts), do: Keyword.get(opts, :default)
   defp to_int(value, _opts) when is_integer(value), do: value
