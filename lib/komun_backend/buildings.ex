@@ -352,6 +352,88 @@ defmodule KomunBackend.Buildings do
     |> Repo.all()
   end
 
+  @doc """
+  Amorce les `Lot` d'un bâtiment à partir de `floors` × `lots_per_floor`.
+
+  La numérotation suit la convention utilisée par `Adjacency` :
+  `"{floor}{column_suffix}"` où `column_suffix` est sur 3 chiffres
+  zero-paddés (`"001"`..`"NNN"`). Exemple : `floors: 2, lots_per_floor: 3,
+  start_floor: 1` produit `["1001", "1002", "1003", "2001", "2002", "2003"]`,
+  donc la convention `2003 → 1003` fonctionne hors du bouge.
+
+  Refuse (`{:error, :lots_already_exist}`) si le bâtiment a déjà au moins
+  un lot — l'amorçage est strictement initial. Pour ajouter des logements
+  ensuite, il faudra une autre fonction (à la main pour l'instant).
+
+  Bornes :
+
+  - `floors >= 1`
+  - `lots_per_floor >= 1`
+  - `lots_per_floor <= 999` (3 chiffres dans le suffixe — le regex de
+    `Adjacency.column_suffix/1` n'en accepte pas plus)
+  - total `floors * lots_per_floor <= 1000` (garde-fou sécurité bdd)
+
+  Tout est inséré dans une transaction — si une seule insertion casse,
+  rien n'est commité.
+  """
+  def generate_lots(%Building{} = building, opts) when is_map(opts) do
+    floors = Map.get(opts, :floors) |> to_int()
+    lots_per_floor = Map.get(opts, :lots_per_floor) |> to_int()
+    start_floor = Map.get(opts, :start_floor, 1) |> to_int(default: 1)
+
+    cond do
+      not is_integer(floors) or floors < 1 ->
+        {:error, :invalid_floors}
+
+      not is_integer(lots_per_floor) or lots_per_floor < 1 ->
+        {:error, :invalid_lots_per_floor}
+
+      lots_per_floor > 999 ->
+        {:error, :too_many_lots_per_floor}
+
+      floors * lots_per_floor > 1000 ->
+        {:error, :too_many_lots_total}
+
+      Repo.exists?(from(l in Lot, where: l.building_id == ^building.id)) ->
+        {:error, :lots_already_exist}
+
+      true ->
+        Repo.transaction(fn ->
+          for floor <- start_floor..(start_floor + floors - 1),
+              column <- 1..lots_per_floor do
+            number =
+              "#{floor}#{column |> Integer.to_string() |> String.pad_leading(3, "0")}"
+
+            %Lot{}
+            |> Lot.changeset(%{
+              number: number,
+              type: :apartment,
+              floor: floor,
+              building_id: building.id
+            })
+            |> Repo.insert!()
+          end
+        end)
+        |> case do
+          {:ok, _} -> {:ok, list_lots(building.id)}
+          {:error, reason} -> {:error, reason}
+        end
+    end
+  end
+
+  defp to_int(value, opts \\ [])
+  defp to_int(nil, opts), do: Keyword.get(opts, :default)
+  defp to_int(value, _opts) when is_integer(value), do: value
+
+  defp to_int(value, opts) when is_binary(value) do
+    case Integer.parse(value) do
+      {n, ""} -> n
+      _ -> Keyword.get(opts, :default)
+    end
+  end
+
+  defp to_int(_, opts), do: Keyword.get(opts, :default)
+
   def list_user_buildings(user_id) do
     from(m in BuildingMember,
       where: m.user_id == ^user_id and m.is_active == true,
