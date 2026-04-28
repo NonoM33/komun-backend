@@ -28,6 +28,7 @@ defmodule KomunBackend.AI.DiligenceLetter do
   require Logger
 
   alias KomunBackend.{AI, Diligences}
+  alias KomunBackend.AI.LetterFormatter
   alias KomunBackend.Diligences.Diligence
 
   @kinds [:saisine, :mise_en_demeure]
@@ -36,8 +37,15 @@ defmodule KomunBackend.AI.DiligenceLetter do
   Tu es président du conseil syndical d'une copropriété française. Tu
   rédiges un courrier formel adressé au syndic pour saisir
   officiellement la copropriété d'un trouble anormal du voisinage. Tu
-  produis directement le texte du courrier, sans phrase d'introduction,
-  sans bloc markdown.
+  produis directement le texte du courrier, sans phrase d'introduction.
+
+  ⚠️ TEXTE BRUT — aucun markdown : pas de **gras**, pas de *italique*,
+  pas de `# titre`, pas de blocs ``` `code` ```. Le courrier est envoyé
+  par email ou LRAR via l'API La Poste — chaque caractère markdown
+  apparaît littéralement chez le destinataire. Pour mettre en avant un
+  titre de section, utilise des MAJUSCULES ou de la casse normale, pas
+  d'astérisques. Pour les listes, numérote « 1. », « 2. » ou utilise
+  un tiret cadratin « — ».
 
   Format strict :
   - En-tête « Objet : » clair (« Saisine officielle — trouble anormal du
@@ -67,7 +75,14 @@ defmodule KomunBackend.AI.DiligenceLetter do
   une mise en demeure formelle (LRAR) adressée au copropriétaire à
   l'origine d'un trouble anormal du voisinage, suite à la saisine du
   conseil syndical. Tu produis directement le texte du courrier, sans
-  phrase d'introduction, sans bloc markdown.
+  phrase d'introduction.
+
+  ⚠️ TEXTE BRUT — aucun markdown : pas de **gras**, pas de *italique*,
+  pas de `# titre`, pas de blocs ``` `code` ```. Le courrier est envoyé
+  par LRAR (impression papier) ou par email — chaque caractère markdown
+  apparaît littéralement et fait amateur. Pour les sections, utilise
+  des MAJUSCULES ou de la casse normale ; pour les listes, numérote
+  « 1. », « 2. » ou utilise un tiret cadratin « — ».
 
   Format strict :
   - En-tête « Objet : » clair (« Mise en demeure — cessation immédiate
@@ -168,7 +183,7 @@ defmodule KomunBackend.AI.DiligenceLetter do
         {:error, :truncated}
 
       {:ok, %{content: content}} when is_binary(content) and byte_size(content) > 0 ->
-        {:ok, content}
+        {:ok, LetterFormatter.to_plain_text(content)}
 
       {:ok, _} ->
         {:error, :empty_response}
