@@ -15,8 +15,22 @@ defmodule KomunBackend.Buildings.Building do
     field :construction_year, :integer
     field :cover_url, :string
     field :settings, :map, default: %{}
+    # Étiquettes d'étage personnalisées : `%{"0" => "RDC", "1" => "1er"}`.
+    # Override optionnel ; si vide pour un étage, le frontend calcule la
+    # valeur par défaut depuis l'entier `floor` du Lot.
+    field :floor_labels, :map, default: %{}
     field :is_active, :boolean, default: true
     field :join_code, :string
+
+    # Bâtiment "placeholder" : auto-créé en même temps qu'une résidence
+    # du même nom par `Buildings.create_building/1`. Ces lignes ne sont
+    # PAS de vrais bâtiments du point de vue utilisateur — c'est juste
+    # « la résidence elle-même » sous une autre forme. On les cache du
+    # dropdown d'inscription et du switcher pour qu'un voisin n'ait
+    # jamais à choisir « unissons » entre « Bâtiment A » et
+    # « Bâtiment B ». Voir migration AddIsPlaceholderToBuildings et
+    # ResidenceController.verify_code/2 pour le filtrage.
+    field :is_placeholder, :boolean, default: false
 
     # Slug pour la pipeline d'ingestion email entrant via Resend.
     # Adresse cible : `<inbound_alias>@inbound.komun.app`. Slug ASCII
@@ -41,7 +55,8 @@ defmodule KomunBackend.Buildings.Building do
   # règle complète. Les seules écritures légitimes du champ passent par
   # `initial_changeset/2` (création d'un bâtiment neuf).
   @edit_fields ~w(name address city postal_code country lot_count construction_year
-                  cover_url settings organization_id residence_id inbound_alias)a
+                  cover_url settings organization_id residence_id inbound_alias
+                  is_placeholder)a
 
   @create_fields [:join_code | @edit_fields]
 

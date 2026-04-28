@@ -47,28 +47,20 @@ defmodule KomunBackendWeb.ResidenceController do
   def verify_code(conn, %{"code" => code}) when is_binary(code) and code != "" do
     case Residences.verify_code(code) do
       {:residence, residence, buildings} ->
-        # Placeholder-filter : on cache les bâtiments qui portent le même
-        # nom que la résidence. Ce sont quasiment toujours des artefacts
-        # de la migration auto-résidence (un building a été auto-promu
-        # en résidence du même nom, puis d'autres bâtiments lui ont été
-        # rattachés). À l'inscription, le voisin ne doit voir QUE les
-        # bâtiments réels. Cas limite préservé : résidence mono-bâtiment
-        # où le building s'appelle effectivement comme la résidence —
-        # dans ce cas on ne filtre pas pour éviter de montrer une liste
-        # vide (rien à choisir).
-        displayable =
-          if length(buildings) > 1 do
-            residence_name_norm = normalize_name(residence.name)
-
-            filtered =
-              Enum.reject(buildings, fn b ->
-                normalize_name(b.name) == residence_name_norm
-              end)
-
-            if filtered == [], do: buildings, else: filtered
-          else
-            buildings
-          end
+        # On cache les bâtiments-placeholder (cf. champ
+        # `Building.is_placeholder` posé à la création quand un building
+        # est auto-créé en même temps qu'une résidence du même nom).
+        # À l'inscription, le voisin ne doit voir QUE les bâtiments
+        # réels — sinon il se retrouve à choisir entre
+        # « Bâtiment A », « Bâtiment B » et « unissons » (le nom de la
+        # résidence elle-même).
+        #
+        # Cas limite : résidence mono-bâtiment où l'unique bâtiment EST
+        # le placeholder. On le laisse passer pour ne pas afficher une
+        # liste vide. Le frontend détecte buildings.length === 1 et
+        # auto-sélectionne sans laisser le choix.
+        real_buildings = Enum.reject(buildings, & &1.is_placeholder)
+        displayable = if real_buildings == [], do: buildings, else: real_buildings
 
         json(conn, %{
           valid: true,
@@ -82,7 +74,8 @@ defmodule KomunBackendWeb.ResidenceController do
                 address: b.address,
                 city: b.city,
                 postal_code: b.postal_code,
-                lot_count: b.lot_count
+                lot_count: b.lot_count,
+                is_placeholder: b.is_placeholder
               }
             end)
         })
@@ -343,18 +336,6 @@ defmodule KomunBackendWeb.ResidenceController do
     end
   end
 
-  # Normalise un nom pour comparer building <-> residence : lowercase +
-  # trim + collapse des espaces. Suffisant pour attraper les cas courants
-  # ("unissons" vs " Unissons ").
-  defp normalize_name(nil), do: ""
-
-  defp normalize_name(name) when is_binary(name) do
-    name
-    |> String.trim()
-    |> String.downcase()
-    |> String.replace(~r/\s+/, " ")
-  end
-
   defp residence_summary(%Residence{} = r) do
     %{
       id: r.id,
@@ -373,7 +354,8 @@ defmodule KomunBackendWeb.ResidenceController do
       city: b.city,
       postal_code: b.postal_code,
       lot_count: b.lot_count,
-      cover_url: b.cover_url
+      cover_url: b.cover_url,
+      is_placeholder: b.is_placeholder
     }
 
     if user.role == :super_admin or user.role in @privileged_roles do
