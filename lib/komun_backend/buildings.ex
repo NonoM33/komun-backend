@@ -561,6 +561,31 @@ defmodule KomunBackend.Buildings do
     {:ok, count}
   end
 
+  @doc """
+  Pose ou retire l'étiquette personnalisée d'un étage du bâtiment.
+
+  - `label = "..."` : enregistre l'override (`floor_labels["3"] = "..."`).
+  - `label = nil` ou `""` : retire l'override (le frontend retombera sur
+    l'étiquette calculée par défaut depuis l'entier `floor`).
+
+  La clé est stringifiée — le champ `floor_labels` est un :map sérialisé
+  en JSONB côté Postgres, donc les clés sont obligatoirement des strings.
+  """
+  def set_floor_label(%Building{} = building, floor, label) when is_integer(floor) do
+    key = Integer.to_string(floor)
+    trimmed = if is_binary(label), do: String.trim(label), else: nil
+
+    new_labels =
+      cond do
+        trimmed in [nil, ""] -> Map.delete(building.floor_labels || %{}, key)
+        true -> Map.put(building.floor_labels || %{}, key, trimmed)
+      end
+
+    building
+    |> Building.floor_labels_changeset(new_labels)
+    |> Repo.update()
+  end
+
   defp to_int(value, opts \\ [])
   defp to_int(nil, opts), do: Keyword.get(opts, :default)
   defp to_int(value, _opts) when is_integer(value), do: value

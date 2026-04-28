@@ -80,6 +80,17 @@ defmodule KomunBackend.Buildings.Building do
   end
 
   @doc """
+  Changeset focalisé sur les étiquettes d'étage (`floor_labels`) — utilisé
+  uniquement par `PUT /buildings/:id/floors/:floor/label`. On l'isole pour
+  éviter qu'un endpoint d'édition générique ne touche à ce champ par
+  accident, et pour ne pas re-valider tout le bâtiment à chaque retape
+  d'étiquette.
+  """
+  def floor_labels_changeset(building, %{} = floor_labels) do
+    cast(building, %{floor_labels: floor_labels}, [:floor_labels])
+  end
+
+  @doc """
   Changeset utilisé uniquement à la CRÉATION d'un bâtiment neuf (accepte
   et exige `:join_code`). Ne PAS utiliser pour une édition.
   """

@@ -49,6 +49,9 @@ defmodule KomunBackendWeb.FloorMapController do
 
       members_by_lot = Enum.group_by(members, & &1.primary_lot_id)
 
+      building = Buildings.get_building!(building_id)
+      floor_labels = building.floor_labels || %{}
+
       payload =
         lots
         |> Enum.group_by(& &1.floor)
@@ -56,6 +59,7 @@ defmodule KomunBackendWeb.FloorMapController do
         |> Enum.map(fn {floor, floor_lots} ->
           %{
             floor: floor,
+            custom_label: floor && Map.get(floor_labels, Integer.to_string(floor)),
             lots: Enum.map(floor_lots, &lot_json(&1, lots, members_by_lot))
           }
         end)
@@ -216,6 +220,46 @@ defmodule KomunBackendWeb.FloorMapController do
            ) do
       {:ok, _count} = Buildings.delete_all_lots(building)
       show(conn, %{"building_id" => building_id})
+    end
+  end
+
+  # PUT /api/v1/buildings/:building_id/floors/:floor/label
+  #
+  # Pose ou retire l'étiquette personnalisée d'un étage. Body :
+  # `%{"label" => "..."}` pour set, `%{"label" => null}` ou `%{"label" => ""}`
+  # pour clear (retomber sur l'étiquette calculée par défaut côté front).
+  def set_floor_label(conn, %{
+        "building_id" => building_id,
+        "floor" => floor_str
+      } = params) do
+    user = Guardian.Plug.current_resource(conn)
+    building = Buildings.get_building!(building_id)
+
+    with :ok <-
+           authorize(
+             conn,
+             building_id,
+             user,
+             @edit_roles,
+             "Édition des étiquettes réservée au syndic et super_admin"
+           ) do
+      case Integer.parse(floor_str || "") do
+        {floor, ""} ->
+          case Buildings.set_floor_label(building, floor, params["label"]) do
+            {:ok, updated} ->
+              json(conn, %{
+                data: %{floor: floor, custom_label: Map.get(updated.floor_labels, Integer.to_string(floor))}
+              })
+
+            {:error, cs} ->
+              conn
+              |> put_status(:unprocessable_entity)
+              |> json(%{errors: format_errors(cs)})
+          end
+
+        _ ->
+          conn |> put_status(:bad_request) |> json(%{error: "Étage invalide."})
+      end
     end
   end
 
