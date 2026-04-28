@@ -86,13 +86,22 @@ defmodule KomunBackendWeb.BuildingController do
   # POST /api/v1/buildings/join
   # Body: %{"code" => "A1B2C3D4"}
   #
-  # Any authenticated user can redeem a short code. New members join with the
-  # `coproprietaire` role by default — syndics / CS presidents still onboard
-  # through the dedicated invite-token flow.
+  # Any authenticated user can redeem a short code. The membership role
+  # défaut au `users.role` global (= choix fait à l'inscription :
+  # locataire, copropriétaire…). Avant on forçait `:coproprietaire`,
+  # ce qui faisait que tous les locataires fraîchement inscrits
+  # devenaient copropriétaires sans le savoir.
+  #
+  # Les rôles `super_admin` / `syndic_*` ne sont pas valables comme
+  # rôle de bâtiment (le schéma BuildingMember ne les accepte pas) :
+  # on retombe dans ce cas sur `:coproprietaire`. Les syndics et CS
+  # présidents continuent d'onboarder via le flow invite-token dédié
+  # qui leur attribue explicitement le bon rôle.
   def join(conn, %{"code" => code}) when is_binary(code) do
     user = Guardian.Plug.current_resource(conn)
+    member_role = global_role_to_member_role(user.role)
 
-    case Buildings.join_by_code(code, user.id) do
+    case Buildings.join_by_code(code, user.id, member_role) do
       {:ok, {:already_member, building}} ->
         conn
         |> put_status(:ok)
@@ -198,4 +207,30 @@ defmodule KomunBackendWeb.BuildingController do
         area_sqm: l.area_sqm, tantieme: l.tantieme, is_occupied: l.is_occupied}
     end)})
   end
+
+  # `users.role` peut valoir `:super_admin`, `:syndic_manager`, `:syndic_staff`
+  # qui ne sont pas des rôles de bâtiment valides — pour ceux-là on retombe
+  # sur `:coproprietaire`. Les autres rôles (locataire, copropriétaire,
+  # gardien, prestataire, président_cs, membre_cs) sont communs aux deux
+  # schémas et passent tels quels.
+  @member_role_set MapSet.new([
+    :coproprietaire,
+    :locataire,
+    :gardien,
+    :prestataire,
+    :president_cs,
+    :membre_cs
+  ])
+
+  defp global_role_to_member_role(role) when is_atom(role) do
+    if MapSet.member?(@member_role_set, role), do: role, else: :coproprietaire
+  end
+
+  defp global_role_to_member_role(role) when is_binary(role) do
+    role |> String.to_existing_atom() |> global_role_to_member_role()
+  rescue
+    ArgumentError -> :coproprietaire
+  end
+
+  defp global_role_to_member_role(_), do: :coproprietaire
 end
