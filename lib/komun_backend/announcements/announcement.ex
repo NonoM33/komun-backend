@@ -9,7 +9,8 @@ defmodule KomunBackend.Announcements.Announcement do
     field :title, :string
     field :body, :string
     field :category, Ecto.Enum,
-      values: [:info, :travaux, :urgent, :ag, :reglementation, :autre], default: :info
+      values: [:info, :travaux, :urgent, :ag, :reglementation, :autre, :community, :event],
+      default: :info
     field :is_pinned, :boolean, default: false
     field :is_published, :boolean, default: true
     field :publish_at, :utc_datetime
