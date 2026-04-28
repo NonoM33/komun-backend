@@ -27,6 +27,48 @@ defmodule KomunBackend.Doleances do
 
   # ── Reads ────────────────────────────────────────────────────────────────
 
+  @doc """
+  Liste les doléances déposées par `user_id` sur l'ensemble des
+  bâtiments d'une résidence.
+
+  Pendant de `Incidents.list_user_incidents_in_residence/3`. Les
+  brouillons sont visibles par l'auteur lui-même et par les
+  privilégiés (CS / syndic / super_admin) ; cachés au reste.
+
+  Les doléances n'ont pas de notion `:council_only` (elles sont par
+  nature collectives), donc pas de filtre de visibilité supplémentaire.
+  """
+  def list_user_doleances_in_residence(residence_id, user_id, viewer \\ nil) do
+    building_ids = KomunBackend.Residences.list_active_building_ids(residence_id)
+
+    if building_ids == [] do
+      []
+    else
+      is_self? = viewer && to_string(viewer.id) == to_string(user_id)
+
+      privileged_in_residence? =
+        viewer && KomunBackend.Residences.privileged_member?(residence_id, viewer)
+
+      base =
+        from(d in Doleance,
+          where:
+            d.building_id in ^building_ids and
+              d.author_id == ^user_id,
+          preload: [:author],
+          order_by: [desc: d.inserted_at]
+        )
+
+      base =
+        if is_self? or privileged_in_residence? do
+          base
+        else
+          where(base, [d], d.status != :brouillon)
+        end
+
+      Repo.all(base)
+    end
+  end
+
   def list_doleances(building_id, filters \\ %{}, viewer \\ nil) do
     from(d in Doleance,
       where: d.building_id == ^building_id,

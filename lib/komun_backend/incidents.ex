@@ -26,6 +26,62 @@ defmodule KomunBackend.Incidents do
     user.role in @privileged_roles or member_role in @privileged_roles
   end
 
+  @doc """
+  Liste les incidents signalés par `user_id` sur l'ensemble des
+  bâtiments d'une résidence.
+
+  Sert à afficher la fiche détaillée d'un voisin (côté front) à un
+  membre du conseil ou au syndic, qui veut voir l'historique de ses
+  signalements sur toute la copro — pas seulement sur le bâtiment
+  courant du viewer.
+
+  Confidentialité : on **exclut** les incidents `:council_only` quand
+  `viewer.id != user_id`, sinon les inclure dans la liste filtrée par
+  `reporter_id` revient à dévoiler l'auteur — exactement ce que
+  `:council_only` est censé protéger. Pour `viewer.id == user_id` (un
+  user qui consulte sa propre activité), on les renvoie : il connaît
+  déjà ses propres signalements.
+
+  Brouillons : visibles par les privilégiés et par l'auteur lui-même.
+  """
+  def list_user_incidents_in_residence(residence_id, user_id, viewer \\ nil) do
+    building_ids = KomunBackend.Residences.list_active_building_ids(residence_id)
+
+    if building_ids == [] do
+      []
+    else
+      is_self? = viewer && to_string(viewer.id) == to_string(user_id)
+
+      privileged_in_residence? =
+        viewer && KomunBackend.Residences.privileged_member?(residence_id, viewer)
+
+      base =
+        from(i in Incident,
+          where:
+            i.building_id in ^building_ids and
+              i.reporter_id == ^user_id,
+          preload: [:reporter, :assignee],
+          order_by: [desc: i.inserted_at]
+        )
+
+      base =
+        if is_self? do
+          base
+        else
+          where(base, [i], i.visibility == :standard)
+        end
+
+      base =
+        if is_self? or privileged_in_residence? do
+          base
+        else
+          where(base, [i], i.status != :brouillon)
+        end
+
+      Repo.all(base)
+    end
+  end
+
   def list_incidents(building_id, filters \\ %{}, viewer \\ nil) do
     base =
       from(i in Incident,
