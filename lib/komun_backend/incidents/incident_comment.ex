@@ -20,6 +20,10 @@ defmodule KomunBackend.Incidents.IncidentComment do
     comment
     |> cast(attrs, [:body, :photo_urls, :is_internal, :incident_id, :author_id])
     |> validate_required([:body, :incident_id, :author_id])
-    |> validate_length(:body, min: 1, max: 2000)
+    # 100 Ko : couvre les emails multipart longs avec quoted-printable
+    # importés via /admin/ingestions sans tronquer le contenu lisible
+    # par le conseil. La limite était à 2 000 historiquement (commentaires
+    # voisins courts), trop restrictive pour les emails forwardés.
+    |> validate_length(:body, min: 1, max: 100_000)
   end
 end

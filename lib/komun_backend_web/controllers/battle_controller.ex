@@ -110,6 +110,43 @@ defmodule KomunBackendWeb.BattleController do
     end
   end
 
+  # DELETE /api/v1/buildings/:building_id/battles/:id
+  #
+  # Suppression admin d'une battle (créée par erreur, doublon, etc.).
+  # Réservée aux rôles privilégiés — un copropriétaire lambda ne peut
+  # pas effacer un tournoi auquel il a participé. La suppression
+  # cascade vers les rounds + votes + responses (cf. delete_battle/1).
+  def delete(conn, %{"building_id" => building_id, "id" => id}) do
+    user = Guardian.Plug.current_resource(conn)
+
+    cond do
+      not (user.role == :super_admin or Buildings.member?(building_id, user.id)) ->
+        conn |> put_status(:forbidden) |> json(%{error: "Forbidden"}) |> halt()
+
+      user.role not in @privileged_roles ->
+        conn |> put_status(:forbidden) |> json(%{error: "Forbidden"}) |> halt()
+
+      true ->
+        battle = Battles.get_battle!(id)
+
+        cond do
+          battle.building_id != building_id ->
+            conn |> put_status(:not_found) |> json(%{error: "Not found"}) |> halt()
+
+          true ->
+            case Battles.delete_battle(id) do
+              {:ok, _} ->
+                send_resp(conn, :no_content, "")
+
+              {:error, reason} ->
+                conn
+                |> put_status(:unprocessable_entity)
+                |> json(%{error: inspect(reason)})
+            end
+        end
+    end
+  end
+
   # POST /api/v1/buildings/:building_id/battles/:id/advance
   # Endpoint admin pour forcer la transition du round courant — utile
   # pour la recette (sinon il faut attendre 3 jours).

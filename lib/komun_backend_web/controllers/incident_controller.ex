@@ -2,7 +2,15 @@ defmodule KomunBackendWeb.IncidentController do
   use KomunBackendWeb, :controller
 
   alias KomunBackend.{Buildings, Incidents}
+  alias KomunBackend.Incidents.IncidentFile
   alias KomunBackend.Auth.Guardian
+
+  # Mêmes bornes que les diligences pour rester cohérent : 15 Mo et la
+  # liste de mime-types qu'on accepte côté pièces justificatives. Si un
+  # type doit être ajouté plus tard (ex. heif, mp4), c'est ici.
+  @max_upload_bytes 15 * 1024 * 1024
+  @allowed_mime_types ~w(application/pdf image/jpeg image/png image/heic image/webp)
+  @photo_mime_types ~w(image/jpeg image/png image/heic image/webp)
 
   # GET /api/v1/buildings/:building_id/incidents
   def index(conn, %{"building_id" => building_id} = params) do
@@ -102,7 +110,7 @@ defmodule KomunBackendWeb.IncidentController do
 
       case Incidents.confirm_ai_answer(incident, user.id) do
         {:ok, updated} ->
-          updated = KomunBackend.Repo.preload(updated, [:reporter, :assignee, comments: :author])
+          updated = KomunBackend.Repo.preload(updated, [:reporter, :assignee, :files, comments: :author])
           json(conn, %{data: incident_json(updated, true)})
 
         {:error, cs} ->
@@ -120,7 +128,7 @@ defmodule KomunBackendWeb.IncidentController do
 
       case Incidents.unconfirm_ai_answer(incident) do
         {:ok, updated} ->
-          updated = KomunBackend.Repo.preload(updated, [:reporter, :assignee, comments: :author])
+          updated = KomunBackend.Repo.preload(updated, [:reporter, :assignee, :files, comments: :author])
           json(conn, %{data: incident_json(updated, true)})
 
         {:error, cs} ->
@@ -144,11 +152,131 @@ defmodule KomunBackendWeb.IncidentController do
 
       case Incidents.update_ai_answer(incident, ai_answer, user.id, confirm: confirm?) do
         {:ok, updated} ->
-          updated = KomunBackend.Repo.preload(updated, [:reporter, :assignee, comments: :author])
+          updated = KomunBackend.Repo.preload(updated, [:reporter, :assignee, :files, comments: :author])
           json(conn, %{data: incident_json(updated, true)})
 
         {:error, cs} ->
           conn |> put_status(:unprocessable_entity) |> json(%{errors: format_errors(cs)})
+      end
+    end
+  end
+
+  # POST /api/v1/buildings/:building_id/incidents/:incident_id/files (multipart)
+  #
+  # Tout membre actif du bâtiment peut joindre une pièce à un incident
+  # `:standard`. Pour un incident `:council_only`, seul le conseil/syndic
+  # voit l'incident et peut donc téléverser — gating identique à `show/2`.
+  def upload_file(conn, %{"building_id" => building_id, "incident_id" => id} = params) do
+    user = Guardian.Plug.current_resource(conn)
+
+    with :ok <- authorize_building(conn, building_id) do
+      incident = Incidents.get_incident!(id)
+      privileged? = Incidents.privileged?(building_id, user)
+
+      cond do
+        incident.building_id != building_id ->
+          conn |> put_status(:not_found) |> json(%{error: "Not found"}) |> halt()
+
+        incident.visibility == :council_only and not privileged? ->
+          conn |> put_status(:not_found) |> json(%{error: "Not found"}) |> halt()
+
+        true ->
+          do_upload(conn, incident, user, privileged?, params)
+      end
+    end
+  end
+
+  defp do_upload(conn, incident, user, privileged?, params) do
+    upload = Map.get(params, "file")
+
+    cond do
+      not match?(%Plug.Upload{}, upload) ->
+        conn
+        |> put_status(:unprocessable_entity)
+        |> json(%{error: "Fichier requis (multipart \"file\")"})
+        |> halt()
+
+      upload.content_type not in @allowed_mime_types ->
+        conn
+        |> put_status(:unprocessable_entity)
+        |> json(%{
+          error: "Type de fichier refusé (autorisés : PDF, JPEG, PNG, HEIC, WebP)"
+        })
+        |> halt()
+
+      file_size(upload.path) > @max_upload_bytes ->
+        conn
+        |> put_status(:unprocessable_entity)
+        |> json(%{error: "Fichier trop volumineux (max #{@max_upload_bytes} octets)"})
+        |> halt()
+
+      true ->
+        case save_upload(upload, incident.id) do
+          {:ok, relative_path} ->
+            attrs = %{
+              "kind" => infer_kind(params["kind"], upload.content_type),
+              "filename" => upload.filename,
+              "file_url" => "/" <> relative_path,
+              "file_size_bytes" => file_size(upload.path),
+              "mime_type" => upload.content_type
+            }
+
+            case Incidents.attach_file(incident.id, user, attrs) do
+              {:ok, _file} ->
+                fresh = Incidents.get_incident!(incident.id)
+
+                conn
+                |> put_status(:created)
+                |> json(%{data: incident_json(fresh, privileged?)})
+
+              {:error, cs} ->
+                conn
+                |> put_status(:unprocessable_entity)
+                |> json(%{errors: format_errors(cs)})
+            end
+
+          {:error, reason} ->
+            conn
+            |> put_status(:internal_server_error)
+            |> json(%{error: "Échec de l'enregistrement : #{inspect(reason)}"})
+        end
+    end
+  end
+
+  # DELETE /api/v1/buildings/:building_id/incidents/:incident_id/files/:file_id
+  #
+  # Suppression : l'auteur de l'incident OU les rôles privilégiés (syndic
+  # / conseil / super_admin). Un voisin lambda ne doit pas pouvoir effacer
+  # une preuve laissée par quelqu'un d'autre.
+  def delete_file(conn, %{
+        "building_id" => building_id,
+        "incident_id" => id,
+        "file_id" => file_id
+      }) do
+    user = Guardian.Plug.current_resource(conn)
+
+    with :ok <- authorize_building(conn, building_id) do
+      incident = Incidents.get_incident!(id)
+      file = Incidents.get_file!(file_id)
+      privileged? = Incidents.privileged?(building_id, user)
+
+      cond do
+        incident.building_id != building_id ->
+          conn |> put_status(:not_found) |> json(%{error: "Not found"}) |> halt()
+
+        file.incident_id != incident.id ->
+          conn |> put_status(:not_found) |> json(%{error: "Not found"}) |> halt()
+
+        not (privileged? or to_string(incident.reporter_id) == to_string(user.id)) ->
+          conn
+          |> put_status(:forbidden)
+          |> json(%{error: "Seul l'auteur ou le conseil / syndic peut supprimer cette pièce."})
+          |> halt()
+
+        true ->
+          {:ok, _} = Incidents.delete_file(file)
+          maybe_remove_file(file.file_url)
+          send_resp(conn, :no_content, "")
       end
     end
   end
@@ -207,10 +335,12 @@ defmodule KomunBackendWeb.IncidentController do
       id: inc.id,
       title: inc.title,
       description: inc.description,
+      micro_summary: inc.micro_summary,
       category: inc.category,
       severity: inc.severity,
       status: inc.status,
       photo_urls: inc.photo_urls,
+      files: files_json(inc.files),
       location: location,
       lot_number: lot_number,
       resolution_note: inc.resolution_note,
@@ -232,6 +362,24 @@ defmodule KomunBackendWeb.IncidentController do
       # filtre adapté). Ne révèle pas qui a signalé pour autant.
       viewer_privileged: privileged?
     }
+  end
+
+  defp files_json(%Ecto.Association.NotLoaded{}), do: []
+  defp files_json(nil), do: []
+
+  defp files_json(list) when is_list(list) do
+    Enum.map(list, fn %IncidentFile{} = f ->
+      %{
+        id: f.id,
+        kind: f.kind,
+        filename: f.filename,
+        file_url: f.file_url,
+        file_size_bytes: f.file_size_bytes,
+        mime_type: f.mime_type,
+        uploaded_by_id: f.uploaded_by_id,
+        inserted_at: f.inserted_at
+      }
+    end)
   end
 
   # Les commentaires importés depuis Gmail sont préfixés par "📧" et
@@ -327,4 +475,66 @@ defmodule KomunBackendWeb.IncidentController do
       end)
     end)
   end
+
+  # ── Upload helpers ────────────────────────────────────────────────────────
+  #
+  # Stratégie identique aux diligences : fichiers stockés sur disque dans
+  # `priv/static/uploads/incidents/:incident_id/` pour qu'un `rm -rf` du
+  # dossier soit toujours sûr (purge isolée par incident).
+
+  defp save_upload(%Plug.Upload{filename: filename, path: tmp_path}, incident_id) do
+    ext = Path.extname(filename)
+    unique_name = "#{System.unique_integer([:positive, :monotonic])}#{ext}"
+
+    dest_dir =
+      Application.app_dir(
+        :komun_backend,
+        "priv/static/uploads/incidents/#{incident_id}"
+      )
+
+    File.mkdir_p!(dest_dir)
+    dest_path = Path.join(dest_dir, unique_name)
+
+    case File.cp(tmp_path, dest_path) do
+      :ok -> {:ok, "uploads/incidents/#{incident_id}/#{unique_name}"}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp file_size(path) do
+    case File.stat(path) do
+      {:ok, %{size: size}} -> size
+      _ -> nil
+    end
+  end
+
+  # Si le client envoie un `kind` valide on le respecte. Sinon on déduit
+  # depuis le mime — image/* → photo, le reste → document. Ça évite de
+  # forcer le front à envoyer le kind quand l'auto-détection suffit.
+  defp infer_kind(kind, _mime) when kind in ["photo", "document"], do: kind
+
+  defp infer_kind(_, mime) when is_binary(mime) do
+    if mime in @photo_mime_types, do: "photo", else: "document"
+  end
+
+  defp infer_kind(_, _), do: "document"
+
+  # Best-effort : pas grave si on n'arrive pas à effacer le fichier sur
+  # disque (déjà parti, chemin malformé…). La ligne DB est, elle, bien
+  # supprimée — l'orphelin sur disque est sans risque.
+  defp maybe_remove_file("/" <> rel) do
+    abs = Application.app_dir(:komun_backend, Path.join("priv/static", rel))
+
+    case File.rm(abs) do
+      :ok ->
+        :ok
+
+      {:error, reason} ->
+        require Logger
+        Logger.warning("[incidents] could not remove #{abs}: #{inspect(reason)}")
+        :ok
+    end
+  end
+
+  defp maybe_remove_file(_), do: :ok
 end

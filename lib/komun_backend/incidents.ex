@@ -6,7 +6,7 @@ defmodule KomunBackend.Incidents do
   alias KomunBackend.Buildings
   alias KomunBackend.Buildings.BuildingMember
   alias KomunBackend.Accounts.User
-  alias KomunBackend.Incidents.{Incident, IncidentComment}
+  alias KomunBackend.Incidents.{Incident, IncidentComment, IncidentFile}
   alias KomunBackend.Notifications
   alias KomunBackendWeb.BuildingChannel
 
@@ -33,7 +33,7 @@ defmodule KomunBackend.Incidents do
         # comment_json/1 reads comment.author, so :author has to be preloaded
         # here too — otherwise we hand it a %Ecto.Association.NotLoaded{} and
         # the whole response crashes with a KeyError on :first_name.
-        preload: [:reporter, :assignee, comments: :author],
+        preload: [:reporter, :assignee, :files, comments: :author],
         order_by: [desc: i.inserted_at]
       )
 
@@ -59,7 +59,10 @@ defmodule KomunBackend.Incidents do
     end
   end
 
-  def get_incident!(id), do: Repo.get!(Incident, id) |> Repo.preload([:reporter, :assignee, comments: :author])
+  def get_incident!(id),
+    do:
+      Repo.get!(Incident, id)
+      |> Repo.preload([:reporter, :assignee, :files, comments: :author])
 
   @doc "Same as get_incident!/1 but returns nil when missing."
   def get_incident(id), do: Repo.get(Incident, id)
@@ -68,7 +71,7 @@ defmodule KomunBackend.Incidents do
     attrs = Map.merge(attrs, %{"building_id" => building_id, "reporter_id" => user_id})
 
     with {:ok, incident} <- %Incident{} |> Incident.changeset(attrs) |> Repo.insert() do
-      incident = Repo.preload(incident, [:reporter, :assignee])
+      incident = Repo.preload(incident, [:reporter, :assignee, :files])
 
       if incident.visibility == :council_only do
         # Confidentialité maximale : on ne diffuse pas via le canal partagé
@@ -228,7 +231,7 @@ defmodule KomunBackend.Incidents do
 
   def update_incident(incident, attrs) do
     with {:ok, updated} <- incident |> Incident.changeset(attrs) |> Repo.update() do
-      updated = Repo.preload(updated, [:reporter, :assignee])
+      updated = Repo.preload(updated, [:reporter, :assignee, :files])
       BuildingChannel.broadcast_incident(updated.building_id, updated)
       {:ok, updated}
     end
@@ -239,6 +242,38 @@ defmodule KomunBackend.Incidents do
       BuildingChannel.broadcast_incident(resolved.building_id, resolved)
       {:ok, resolved}
     end
+  end
+
+  # ── Files (uploads) ───────────────────────────────────────────────────────
+
+  @doc """
+  Attache une pièce jointe (photo / document) à un incident. La validation
+  taille / mime est faite côté controller avant l'appel — ici on ne se
+  contente que d'insérer la ligne en DB.
+  """
+  def attach_file(incident_id, %User{} = user, attrs) do
+    attrs =
+      attrs
+      |> normalize_attrs()
+      |> Map.merge(%{
+        "incident_id" => incident_id,
+        "uploaded_by_id" => user.id
+      })
+
+    %IncidentFile{}
+    |> IncidentFile.changeset(attrs)
+    |> Repo.insert()
+  end
+
+  def get_file!(id), do: Repo.get!(IncidentFile, id)
+
+  def delete_file(%IncidentFile{} = file), do: Repo.delete(file)
+
+  defp normalize_attrs(attrs) when is_map(attrs) do
+    Map.new(attrs, fn
+      {k, v} when is_atom(k) -> {Atom.to_string(k), v}
+      {k, v} -> {k, v}
+    end)
   end
 
   def add_comment(incident_id, author_id, attrs) do

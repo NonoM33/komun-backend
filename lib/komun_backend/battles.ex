@@ -45,6 +45,42 @@ defmodule KomunBackend.Battles do
     |> preload_battles()
   end
 
+  @doc """
+  Supprime une battle, ses Vote (cascade DB vers options/responses/
+  attachments) et annule les jobs `AdvanceJob` planifiés.
+
+  La FK `votes.battle_id` est en `on_delete: :nilify_all` (cf. migration
+  `20260425230000_create_battles.exs`) — supprimer la battle laisserait
+  donc des votes orphelins, ce qu'on ne veut pas pour une suppression
+  pilotée par un admin. On supprime les votes manuellement avant la
+  battle ; la cascade naturelle vers `vote_options` / `vote_responses` /
+  `vote_attachments` (toutes en `on_delete: :delete_all`) fait le reste.
+  """
+  def delete_battle(id) when is_binary(id) do
+    battle = Repo.get!(Battle, id)
+
+    Repo.transaction(fn ->
+      cancel_advance_jobs(battle.id)
+
+      from(v in Vote, where: v.battle_id == ^battle.id)
+      |> Repo.delete_all()
+
+      case Repo.delete(battle) do
+        {:ok, deleted} -> deleted
+        {:error, reason} -> Repo.rollback(reason)
+      end
+    end)
+  end
+
+  defp cancel_advance_jobs(battle_id) do
+    from(j in Oban.Job,
+      where: j.worker == "KomunBackend.Battles.AdvanceJob",
+      where: fragment("?->>'battle_id' = ?", j.args, ^battle_id),
+      where: j.state in ["available", "scheduled", "retryable"]
+    )
+    |> Oban.cancel_all_jobs()
+  end
+
   # Le preload via une query partagée (`from(v in Vote, ...)`) ne scope
   # PAS automatiquement la foreign key — on chargeait du coup tous les
   # Vote de la base au lieu de ceux de la battle. On préfère le preload

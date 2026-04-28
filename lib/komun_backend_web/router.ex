@@ -96,6 +96,9 @@ defmodule KomunBackendWeb.Router do
       post "/confirm-ai", IncidentController, :confirm_ai_answer
       delete "/confirm-ai", IncidentController, :unconfirm_ai_answer
       put "/ai-answer", IncidentController, :update_ai_answer
+
+      post   "/files",             IncidentController, :upload_file
+      delete "/files/:file_id",    IncidentController, :delete_file
     end
 
     # Doléances (réclamations collectives : rampe de parking trop anguleuse,
@@ -107,6 +110,9 @@ defmodule KomunBackendWeb.Router do
       post   "/suggest-experts",  DoleanceController, :suggest_experts
       post   "/escalate",         DoleanceController, :escalate
       get    "/events",           DoleanceController, :events
+
+      post   "/files",            DoleanceController, :upload_file
+      delete "/files/:file_id",   DoleanceController, :delete_file
     end
 
     # Diligences (procédure encadrée pour troubles anormaux du voisinage,
@@ -148,11 +154,12 @@ defmodule KomunBackendWeb.Router do
     # Battles (vote à élimination en plusieurs rounds, ex. choix de
     # mobilier collectif). Création réservée CS + syndic ; tous les
     # membres du bâtiment peuvent voter.
-    get  "/buildings/:building_id/battles",            BattleController, :index
-    post "/buildings/:building_id/battles",            BattleController, :create
-    get  "/buildings/:building_id/battles/:id",        BattleController, :show
-    post "/buildings/:building_id/battles/:id/vote",   BattleController, :cast_vote
-    post "/buildings/:building_id/battles/:id/advance", BattleController, :advance
+    get    "/buildings/:building_id/battles",            BattleController, :index
+    post   "/buildings/:building_id/battles",            BattleController, :create
+    get    "/buildings/:building_id/battles/:id",        BattleController, :show
+    delete "/buildings/:building_id/battles/:id",        BattleController, :delete
+    post   "/buildings/:building_id/battles/:id/vote",   BattleController, :cast_vote
+    post   "/buildings/:building_id/battles/:id/advance", BattleController, :advance
 
     # Projects (copro devis workflow) — groups devis by project, then starts
     # a vote on the chosen devis.
