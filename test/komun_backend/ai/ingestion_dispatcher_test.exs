@@ -56,6 +56,11 @@ defmodule KomunBackend.AI.IngestionDispatcherTest do
       assert_received {:routine_request, conn}
       assert ["Bearer test-token"] = Plug.Conn.get_req_header(conn, "authorization")
       assert ["application/json"] = Plug.Conn.get_req_header(conn, "content-type")
+      # Anthropic beta gate + version pin for /v1/claude_code/routines/.../fire
+      assert ["2023-06-01"] = Plug.Conn.get_req_header(conn, "anthropic-version")
+
+      assert ["experimental-cc-routine-2026-04-01"] =
+               Plug.Conn.get_req_header(conn, "anthropic-beta")
 
       {:ok, body, _conn} = Plug.Conn.read_body(conn)
       assert Jason.decode!(body)["subject"] == "Test"
