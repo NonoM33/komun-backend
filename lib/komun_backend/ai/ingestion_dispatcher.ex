@@ -48,8 +48,14 @@ defmodule KomunBackend.AI.IngestionDispatcher do
 
   @doc "Synchronous dispatch — useful for tests."
   def dispatch(url, token, payload) do
+    # The Anthropic Code Routines API (`/v1/claude_code/routines/.../fire`)
+    # is currently in beta and requires both the version + beta gate
+    # headers. The bearer is the OAuth token (`sk-ant-oat01-…`) provisioned
+    # for this specific routine.
     headers = [
       {"authorization", "Bearer #{token}"},
+      {"anthropic-version", "2023-06-01"},
+      {"anthropic-beta", "experimental-cc-routine-2026-04-01"},
       {"content-type", "application/json"}
     ]
 
