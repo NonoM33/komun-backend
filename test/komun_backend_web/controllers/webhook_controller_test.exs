@@ -86,6 +86,22 @@ defmodule KomunBackendWeb.WebhookControllerTest do
     assert response.status == 401
   end
 
+  test "accepts svix-* legacy headers (what Resend actually sends)", %{conn: conn} do
+    payload = %{"foo" => "bar"}
+    body = Jason.encode!(payload)
+    {id, ts, sig} = sign(body)
+
+    response =
+      conn
+      |> Plug.Conn.put_req_header("content-type", "application/json")
+      |> Plug.Conn.put_req_header("svix-id", id)
+      |> Plug.Conn.put_req_header("svix-timestamp", ts)
+      |> Plug.Conn.put_req_header("svix-signature", sig)
+      |> post("/api/v1/webhooks/resend/inbound", body)
+
+    assert response.status == 200
+  end
+
   test "accepts a valid signature and returns 200 forwarded", %{conn: conn} do
     payload = %{
       "from" => %{"email" => "voisin@gmail.com", "name" => "Voisin"},

@@ -93,9 +93,13 @@ defmodule KomunBackendWeb.WebhookController do
 
   defp do_verify_signature(conn, secret) do
     raw_body = conn.assigns[:raw_body] || ""
-    id_hdr = get_req_header(conn, "webhook-id") |> List.first()
-    ts_hdr = get_req_header(conn, "webhook-timestamp") |> List.first()
-    sig_hdr = get_req_header(conn, "webhook-signature") |> List.first()
+    # Resend / Svix accepts both header naming conventions:
+    #   - `webhook-*` (Standard Webhooks spec, newer)
+    #   - `svix-*`    (legacy Svix, what Resend currently sends in practice)
+    # We accept either — same signature scheme behind both.
+    id_hdr = first_header(conn, ["webhook-id", "svix-id"])
+    ts_hdr = first_header(conn, ["webhook-timestamp", "svix-timestamp"])
+    sig_hdr = first_header(conn, ["webhook-signature", "svix-signature"])
 
     cond do
       raw_body == "" ->
@@ -124,6 +128,15 @@ defmodule KomunBackendWeb.WebhookController do
             {:error, :unauthorized}
         end
     end
+  end
+
+  defp first_header(conn, names) do
+    Enum.find_value(names, fn name ->
+      case get_req_header(conn, name) do
+        [v | _] -> v
+        _ -> nil
+      end
+    end)
   end
 
   defp signing_secret, do: System.get_env("RESEND_WEBHOOK_SIGNING_SECRET")
