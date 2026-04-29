@@ -27,15 +27,28 @@ defmodule KomunBackend.Incidents do
   end
 
   def list_incidents(building_id, filters \\ %{}, viewer \\ nil) do
+    # Inclut les incidents `building_id == ^building_id` ET ceux du
+    # niveau résidence (`residence_id == building.residence_id`), pour
+    # qu'un résident d'un bâtiment voit aussi les sujets transverses
+    # à sa résidence. On branche en fonction du `residence_id` pour
+    # éviter `Postgrex 42P18 indeterminate_datatype` quand la valeur
+    # est nil (un bâtiment sans résidence — cas legacy).
+    residence_id = Buildings.get_residence_id(building_id)
+
     base =
       from(i in Incident,
-        where: i.building_id == ^building_id,
         # comment_json/1 reads comment.author, so :author has to be preloaded
         # here too — otherwise we hand it a %Ecto.Association.NotLoaded{} and
         # the whole response crashes with a KeyError on :first_name.
         preload: [:reporter, :assignee, :files, comments: :author],
         order_by: [desc: i.inserted_at]
       )
+
+    base =
+      case residence_id do
+        nil -> where(base, [i], i.building_id == ^building_id)
+        rid -> where(base, [i], i.building_id == ^building_id or i.residence_id == ^rid)
+      end
 
     base
     |> apply_filter(:status, filters["status"])
@@ -45,9 +58,74 @@ defmodule KomunBackend.Incidents do
     |> Repo.all()
   end
 
+  @doc """
+  Liste les incidents rattachés au niveau résidence (pas à un bâtiment
+  précis). Utilisé par le scope `/residences/:rid/incidents`.
+  """
+  def list_residence_incidents(residence_id, filters \\ %{}, viewer \\ nil) do
+    base =
+      from(i in Incident,
+        where: i.residence_id == ^residence_id,
+        preload: [:reporter, :assignee, :files, comments: :author],
+        order_by: [desc: i.inserted_at]
+      )
+
+    base
+    |> apply_filter(:status, filters["status"])
+    |> apply_filter(:severity, filters["severity"])
+    |> apply_drafts_visibility_for_residence(filters, residence_id, viewer)
+    |> apply_visibility_for_residence(residence_id, viewer)
+    |> Repo.all()
+  end
+
   defp apply_filter(q, _field, nil), do: q
   defp apply_filter(q, :status, v), do: where(q, [i], i.status == ^v)
   defp apply_filter(q, :severity, v), do: where(q, [i], i.severity == ^v)
+
+  # Variante "résidence" des helpers de visibilité : un user est
+  # considéré comme privilégié pour une résidence s'il a un rôle
+  # privilégié dans **au moins un** des bâtiments de la résidence
+  # (ou s'il est super_admin global).
+  defp privileged_for_residence?(_residence_id, nil), do: false
+  defp privileged_for_residence?(_residence_id, %User{role: :super_admin}), do: true
+
+  defp privileged_for_residence?(residence_id, %User{} = user) do
+    if user.role in @privileged_roles, do: true, else: residence_member_privileged?(residence_id, user.id)
+  end
+
+  # Sous-ensemble qui correspond aux valeurs de l'enum
+  # `BuildingMember.role`. `super_admin` / `syndic_*` sont des
+  # `User.role` globaux et n'ont pas leur place ici.
+  @privileged_member_roles [:president_cs, :membre_cs]
+
+  defp residence_member_privileged?(residence_id, user_id) do
+    from(bm in BuildingMember,
+      join: b in assoc(bm, :building),
+      where:
+        b.residence_id == ^residence_id and bm.user_id == ^user_id and
+          bm.role in ^@privileged_member_roles,
+      select: 1,
+      limit: 1
+    )
+    |> Repo.one()
+    |> Kernel.!=(nil)
+  end
+
+  defp apply_drafts_visibility_for_residence(q, _filters, residence_id, viewer) do
+    if privileged_for_residence?(residence_id, viewer) do
+      q
+    else
+      where(q, [i], i.status != :brouillon)
+    end
+  end
+
+  defp apply_visibility_for_residence(q, residence_id, viewer) do
+    if privileged_for_residence?(residence_id, viewer) do
+      q
+    else
+      where(q, [i], i.visibility == :standard)
+    end
+  end
 
   # Brouillons :
   # - Privilégiés (super_admin / syndic_* / président_cs / membre_cs)
@@ -126,6 +204,31 @@ defmodule KomunBackend.Incidents do
           # Notifications ciblées de voisinage (water_leak → en dessous,
           # noise → voisins de palier). Pas de notif si subtype absent.
           maybe_notify_neighbors(incident)
+      end
+
+      {:ok, incident}
+    end
+  end
+
+  @doc """
+  Variante "résidence" : crée un incident rattaché à la résidence
+  entière (et donc visible à tous les bâtiments). Pas de broadcast
+  building-channel (on n'a pas de canal résidence pour l'instant —
+  la liste est mise à jour par invalidation côté front à l'ouverture
+  de la page). L'IA triage tourne quand même puisqu'elle ne dépend
+  pas du building.
+  """
+  def create_residence_incident(residence_id, user_id, attrs) do
+    attrs =
+      attrs
+      |> Map.delete("building_id")
+      |> Map.merge(%{"residence_id" => residence_id, "reporter_id" => user_id})
+
+    with {:ok, incident} <- %Incident{} |> Incident.changeset(attrs) |> Repo.insert() do
+      incident = Repo.preload(incident, [:reporter, :assignee, :files])
+
+      if incident.status != :brouillon and incident.visibility == :standard do
+        KomunBackend.AI.Triage.triage_incident_async(incident)
       end
 
       {:ok, incident}

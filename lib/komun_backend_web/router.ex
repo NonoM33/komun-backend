@@ -102,6 +102,12 @@ defmodule KomunBackendWeb.Router do
     # privileged (super_admin / syndic / conseil syndical).
     post "/buildings/:building_id/ingestions/files", IngestionController, :create
 
+    # Dossiers rattachés à la résidence entière (visible à tous les
+    # bâtiments). Voir `ResidenceCaseController` pour l'authz.
+    post "/residences/:residence_id/incidents",  ResidenceCaseController, :create_incident
+    post "/residences/:residence_id/doleances",  ResidenceCaseController, :create_doleance
+    post "/residences/:residence_id/diligences", ResidenceCaseController, :create_diligence
+
     # Incidents
     resources "/buildings/:building_id/incidents", IncidentController, except: [:new, :edit] do
       post "/comments", IncidentCommentController, :create

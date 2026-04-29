@@ -49,7 +49,12 @@ defmodule KomunBackend.Incidents.Incident do
     field :ai_model, :string
     field :ai_answer_confirmed_at, :utc_datetime
 
+    # Un incident vit soit sur un bâtiment précis, soit sur la résidence
+    # entière (auquel cas tous les bâtiments le voient). Exactement un des
+    # deux doit être set — verrou côté DB via le check_constraint
+    # `case_scope_xor` (cf. migration AddResidenceScopeToCases).
     belongs_to :building, KomunBackend.Buildings.Building
+    belongs_to :residence, KomunBackend.Residences.Residence
     belongs_to :reporter, KomunBackend.Accounts.User, foreign_key: :reporter_id
     belongs_to :assignee, KomunBackend.Accounts.User, foreign_key: :assignee_id
     belongs_to :ai_answer_confirmed_by, KomunBackend.Accounts.User,
@@ -63,13 +68,37 @@ defmodule KomunBackend.Incidents.Incident do
   def changeset(incident, attrs) do
     incident
     |> cast(attrs, [:title, :description, :category, :severity, :status,
-                    :photo_urls, :location, :lot_number, :building_id, :reporter_id,
-                    :assignee_id, :resolution_note, :visibility, :subtype,
+                    :photo_urls, :location, :lot_number, :building_id, :residence_id,
+                    :reporter_id, :assignee_id, :resolution_note, :visibility, :subtype,
                     :ai_answer, :ai_answered_at, :ai_model,
                     :ai_answer_confirmed_at, :ai_answer_confirmed_by_id,
                     :micro_summary])
-    |> validate_required([:title, :description, :category, :building_id, :reporter_id])
+    |> validate_required([:title, :description, :category, :reporter_id])
     |> validate_length(:title, min: 5, max: 200)
+    |> validate_scope_xor()
+    |> check_constraint(:building_id, name: :case_scope_xor,
+                        message: "doit être lié à un bâtiment OU à une résidence, pas aux deux")
+  end
+
+  # Exactement un de building_id / residence_id doit être set. Vérifié
+  # ici en amont pour produire une erreur claire avant que la DB nous
+  # claque le check_constraint.
+  defp validate_scope_xor(changeset) do
+    building = get_field(changeset, :building_id)
+    residence = get_field(changeset, :residence_id)
+
+    cond do
+      building && residence ->
+        add_error(changeset, :residence_id,
+          "ne peut pas être défini si building_id est aussi défini")
+
+      is_nil(building) && is_nil(residence) ->
+        add_error(changeset, :building_id,
+          "building_id ou residence_id est requis")
+
+      true ->
+        changeset
+    end
   end
 
   def resolve_changeset(incident, note) do

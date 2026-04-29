@@ -26,7 +26,11 @@ defmodule KomunBackend.Diligences.Diligence do
     field :saisine_syndic_letter, :string
     field :mise_en_demeure_letter, :string
 
+    # Une diligence vit soit sur un bâtiment précis, soit sur la résidence
+    # entière. Verrou DB via le check_constraint `case_scope_xor` (cf.
+    # migration AddResidenceScopeToCases).
     belongs_to :building, KomunBackend.Buildings.Building
+    belongs_to :residence, KomunBackend.Residences.Residence
     belongs_to :created_by, KomunBackend.Accounts.User, foreign_key: :created_by_id
 
     belongs_to :linked_incident, KomunBackend.Incidents.Incident,
@@ -58,15 +62,39 @@ defmodule KomunBackend.Diligences.Diligence do
       :source_type,
       :source_label,
       :building_id,
+      :residence_id,
       :created_by_id,
       :linked_incident_id
     ])
-    |> validate_required([:title, :building_id, :created_by_id])
+    |> validate_required([:title, :created_by_id])
     |> validate_length(:title, min: 5, max: 200)
     |> validate_length(:source_label, max: 200)
+    |> validate_scope_xor()
     |> assoc_constraint(:building)
+    |> assoc_constraint(:residence)
     |> assoc_constraint(:created_by)
     |> assoc_constraint(:linked_incident)
+    |> check_constraint(:building_id, name: :case_scope_xor,
+                        message: "doit être lié à un bâtiment OU à une résidence, pas aux deux")
+  end
+
+  # Voir doc dans `KomunBackend.Incidents.Incident.changeset/2`.
+  defp validate_scope_xor(changeset) do
+    building = get_field(changeset, :building_id)
+    residence = get_field(changeset, :residence_id)
+
+    cond do
+      building && residence ->
+        add_error(changeset, :residence_id,
+          "ne peut pas être défini si building_id est aussi défini")
+
+      is_nil(building) && is_nil(residence) ->
+        add_error(changeset, :building_id,
+          "building_id ou residence_id est requis")
+
+      true ->
+        changeset
+    end
   end
 
   @doc """

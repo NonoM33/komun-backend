@@ -16,6 +16,19 @@ defmodule KomunBackend.Buildings do
 
   def get_building!(id), do: Repo.get!(Building, id)
 
+  @doc """
+  Renvoie le `residence_id` d'un bâtiment, ou `nil` si le bâtiment
+  n'existe pas. Utilisé par les contextes Incidents/Doleances/Diligences
+  pour écrire la query OR (incidents propres au bâtiment ∪ incidents au
+  niveau résidence) sans charger toute la struct.
+  """
+  def get_residence_id(building_id) when is_binary(building_id) do
+    from(b in Building, where: b.id == ^building_id, select: b.residence_id)
+    |> Repo.one()
+  end
+
+  def get_residence_id(_), do: nil
+
   def get_building_for_org!(org_id, id) do
     from(b in Building,
       where: b.id == ^id and b.organization_id == ^org_id
