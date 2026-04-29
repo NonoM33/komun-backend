@@ -9,6 +9,8 @@ defmodule KomunBackendWeb.DiligenceControllerTest do
 
   use KomunBackendWeb.ConnCase, async: false
 
+  import Ecto.Query, only: [from: 2]
+
   alias KomunBackend.{Buildings, Repo, Residences}
   alias KomunBackend.Accounts.User
   alias KomunBackend.Auth.Guardian
@@ -192,6 +194,78 @@ defmodule KomunBackendWeb.DiligenceControllerTest do
         |> get(~p"/api/v1/buildings/#{building_a.id}/diligences/#{dilig_b.id}")
 
       assert json_response(conn, 404)
+    end
+  end
+
+  describe "DELETE /api/v1/buildings/:bid/diligences/:id" do
+    test "supprime la diligence + steps + files en cascade", %{conn: conn} do
+      {building, user} = setup_with_president()
+
+      {:ok, d} =
+        KomunBackend.Diligences.create_diligence(building.id, user, %{"title" => "À supprimer"})
+
+      conn =
+        conn
+        |> authed(user)
+        |> delete(~p"/api/v1/buildings/#{building.id}/diligences/#{d.id}")
+
+      assert response(conn, 204)
+
+      # diligence + steps disparus
+      assert is_nil(KomunBackend.Diligences.get_diligence(d.id))
+
+      step_count =
+        Repo.aggregate(
+          from(s in KomunBackend.Diligences.DiligenceStep, where: s.diligence_id == ^d.id),
+          :count
+        )
+
+      assert step_count == 0
+    end
+
+    test "renvoie 403 à un copropriétaire standard", %{conn: conn} do
+      {building, _privileged} = setup_with_president()
+
+      {:ok, d} =
+        KomunBackend.Diligences.create_diligence(
+          building.id,
+          insert_user!(:super_admin),
+          %{"title" => "Sujet"}
+        )
+
+      copro = insert_user!()
+      {:ok, _} = Buildings.add_member(building.id, copro.id, :coproprietaire)
+
+      conn =
+        conn
+        |> authed(copro)
+        |> delete(~p"/api/v1/buildings/#{building.id}/diligences/#{d.id}")
+
+      assert json_response(conn, 403)
+
+      # toujours là
+      refute is_nil(KomunBackend.Diligences.get_diligence(d.id))
+    end
+
+    test "renvoie 404 si la diligence appartient à un autre bâtiment", %{conn: conn} do
+      {building_a, user_a} = setup_with_president()
+
+      residence_b = insert_residence!()
+      building_b = insert_building!(residence_b)
+      user_b = insert_user!()
+      {:ok, _} = Buildings.add_member(building_b.id, user_b.id, :president_cs)
+
+      {:ok, d_b} =
+        KomunBackend.Diligences.create_diligence(building_b.id, user_b, %{"title" => "Sujet B"})
+
+      # président de A tente de delete une diligence du B en passant par /buildings/A/.../d_b.id
+      conn =
+        conn
+        |> authed(user_a)
+        |> delete(~p"/api/v1/buildings/#{building_a.id}/diligences/#{d_b.id}")
+
+      assert json_response(conn, 404)
+      refute is_nil(KomunBackend.Diligences.get_diligence(d_b.id))
     end
   end
 
