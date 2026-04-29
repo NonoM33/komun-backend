@@ -100,6 +100,29 @@ defmodule KomunBackendWeb.DiligenceController do
     end
   end
 
+  # DELETE /api/v1/buildings/:building_id/diligences/:id
+  #
+  # Garde-fou identique au `show/update` : si l'`id` ne correspond pas
+  # au bâtiment dans l'URL, on renvoie 404 plutôt que de mélanger les
+  # bâtiments. Réservé aux rôles privilégiés (syndic + CS + super_admin).
+  # Les `diligence_steps` et `diligence_files` tombent en cascade côté DB.
+  def delete(conn, %{"building_id" => building_id, "id" => id}) do
+    user = Guardian.Plug.current_resource(conn)
+
+    with :ok <- authorize_privileged(conn, building_id, user) do
+      diligence = Diligences.get_diligence!(id)
+
+      cond do
+        diligence.building_id != building_id ->
+          conn |> put_status(:not_found) |> json(%{error: "Not found"}) |> halt()
+
+        true ->
+          {:ok, _} = Diligences.delete_diligence(diligence)
+          send_resp(conn, :no_content, "")
+      end
+    end
+  end
+
   # PATCH /api/v1/buildings/:building_id/diligences/:id/steps/:step_number
   def update_step(conn, %{
         "building_id" => building_id,

@@ -129,11 +129,12 @@ defmodule KomunBackendWeb.Router do
 
     # Diligences (procédure encadrée pour troubles anormaux du voisinage,
     # réservée au syndic + conseil syndical — gating dans le controller).
-    get   "/buildings/:building_id/diligences",        DiligenceController, :index
-    post  "/buildings/:building_id/diligences",        DiligenceController, :create
-    get   "/buildings/:building_id/diligences/:id",    DiligenceController, :show
-    patch "/buildings/:building_id/diligences/:id",    DiligenceController, :update
-    put   "/buildings/:building_id/diligences/:id",    DiligenceController, :update
+    get    "/buildings/:building_id/diligences",        DiligenceController, :index
+    post   "/buildings/:building_id/diligences",        DiligenceController, :create
+    get    "/buildings/:building_id/diligences/:id",    DiligenceController, :show
+    patch  "/buildings/:building_id/diligences/:id",    DiligenceController, :update
+    put    "/buildings/:building_id/diligences/:id",    DiligenceController, :update
+    delete "/buildings/:building_id/diligences/:id",    DiligenceController, :delete
 
     patch "/buildings/:building_id/diligences/:id/steps/:step_number",
           DiligenceController, :update_step

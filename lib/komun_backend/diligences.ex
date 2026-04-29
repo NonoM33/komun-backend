@@ -175,6 +175,18 @@ defmodule KomunBackend.Diligences do
   end
 
   @doc """
+  Supprime une diligence. Les `diligence_steps` et `diligence_files`
+  tombent en cascade côté DB (FK `on_delete: :delete_all`), donc on
+  n'a pas à les nettoyer manuellement.
+
+  Réservé au caller privilégié — l'autorisation est faite côté
+  controller, pas ici. Renvoie `{:ok, diligence}` ou `{:error, cs}`.
+  """
+  def delete_diligence(%Diligence{} = diligence) do
+    Repo.delete(diligence)
+  end
+
+  @doc """
   Met à jour une étape spécifique d'une diligence. `step_number` est
   validé en amont (1..9). Si l'étape n'existe pas (cas théorique : la
   création a planté à mi-chemin avant la PR), on renvoie `{:error, :not_found}`.
