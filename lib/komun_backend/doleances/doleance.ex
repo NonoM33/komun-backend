@@ -50,7 +50,11 @@ defmodule KomunBackend.Doleances.Doleance do
     field :resolved_at, :utc_datetime
     field :resolution_note, :string
 
+    # Une doléance vit soit sur un bâtiment précis, soit sur la résidence
+    # entière (visible à tous les bâtiments). Verrou DB via le
+    # check_constraint `case_scope_xor` (cf. migration AddResidenceScopeToCases).
     belongs_to :building, KomunBackend.Buildings.Building
+    belongs_to :residence, KomunBackend.Residences.Residence
     belongs_to :author, KomunBackend.Accounts.User, foreign_key: :author_id
 
     # Doléance issue d'un incident (« dégât → garantie → doléance »).
@@ -89,12 +93,35 @@ defmodule KomunBackend.Doleances.Doleance do
       :resolved_at,
       :resolution_note,
       :building_id,
+      :residence_id,
       :author_id,
       :linked_incident_id
     ])
-    |> validate_required([:title, :description, :category, :building_id, :author_id])
+    |> validate_required([:title, :description, :category, :author_id])
     |> validate_length(:title, min: 5, max: 200)
     |> validate_length(:description, min: 10)
+    |> validate_scope_xor()
     |> assoc_constraint(:linked_incident)
+    |> check_constraint(:building_id, name: :case_scope_xor,
+                        message: "doit être lié à un bâtiment OU à une résidence, pas aux deux")
+  end
+
+  # Voir doc dans `KomunBackend.Incidents.Incident.changeset/2`.
+  defp validate_scope_xor(changeset) do
+    building = get_field(changeset, :building_id)
+    residence = get_field(changeset, :residence_id)
+
+    cond do
+      building && residence ->
+        add_error(changeset, :residence_id,
+          "ne peut pas être défini si building_id est aussi défini")
+
+      is_nil(building) && is_nil(residence) ->
+        add_error(changeset, :building_id,
+          "building_id ou residence_id est requis")
+
+      true ->
+        changeset
+    end
   end
 end

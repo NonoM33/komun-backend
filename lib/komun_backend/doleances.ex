@@ -28,14 +28,43 @@ defmodule KomunBackend.Doleances do
   # ── Reads ────────────────────────────────────────────────────────────────
 
   def list_doleances(building_id, filters \\ %{}, viewer \\ nil) do
+    # Inclut les doléances liées au bâtiment ET celles au niveau résidence.
+    # On branche en fonction du `residence_id` pour éviter le pb de type
+    # Postgrex quand le bâtiment n'a pas de résidence (cas legacy).
+    residence_id = KomunBackend.Buildings.get_residence_id(building_id)
+
+    base =
+      from(d in Doleance,
+        preload: [:author, :files, :linked_incident, supports: :user],
+        order_by: [desc: d.inserted_at]
+      )
+
+    base =
+      case residence_id do
+        nil -> where(base, [d], d.building_id == ^building_id)
+        rid -> where(base, [d], d.building_id == ^building_id or d.residence_id == ^rid)
+      end
+
+    base
+    |> apply_filter(:status, filters["status"])
+    |> apply_filter(:linked_incident_id, filters["linked_incident_id"])
+    |> apply_drafts_visibility(building_id, viewer)
+    |> Repo.all()
+  end
+
+  @doc """
+  Liste les doléances rattachées au niveau résidence (pas à un bâtiment
+  précis). Utilisé par le scope `/residences/:rid/doleances`.
+  """
+  def list_residence_doleances(residence_id, filters \\ %{}, viewer \\ nil) do
     from(d in Doleance,
-      where: d.building_id == ^building_id,
+      where: d.residence_id == ^residence_id,
       preload: [:author, :files, :linked_incident, supports: :user],
       order_by: [desc: d.inserted_at]
     )
     |> apply_filter(:status, filters["status"])
     |> apply_filter(:linked_incident_id, filters["linked_incident_id"])
-    |> apply_drafts_visibility(building_id, viewer)
+    |> apply_residence_drafts_visibility(residence_id, viewer)
     |> Repo.all()
   end
 
@@ -82,6 +111,40 @@ defmodule KomunBackend.Doleances do
     user.role in @privileged_roles or member_role in @privileged_roles
   end
 
+  # Variante "résidence" : un user est privilégié pour une résidence s'il
+  # est super_admin global, OU si son `User.role` est privilégié, OU s'il
+  # est membre privilégié d'au moins un bâtiment de la résidence.
+  defp residence_doleance_privileged?(_residence_id, nil), do: false
+
+  defp residence_doleance_privileged?(_residence_id, %User{role: :super_admin}), do: true
+
+  defp residence_doleance_privileged?(residence_id, %User{} = user) do
+    if user.role in @privileged_roles do
+      true
+    else
+      privileged_member_roles = [:president_cs, :membre_cs]
+
+      from(bm in KomunBackend.Buildings.BuildingMember,
+        join: b in assoc(bm, :building),
+        where:
+          b.residence_id == ^residence_id and bm.user_id == ^user.id and
+            bm.role in ^privileged_member_roles,
+        select: 1,
+        limit: 1
+      )
+      |> Repo.one()
+      |> Kernel.!=(nil)
+    end
+  end
+
+  defp apply_residence_drafts_visibility(q, residence_id, viewer) do
+    if residence_doleance_privileged?(residence_id, viewer) do
+      q
+    else
+      where(q, [d], d.status != :brouillon)
+    end
+  end
+
   def get_doleance!(id) do
     Repo.get!(Doleance, id)
     |> Repo.preload([:author, :files, :linked_incident, supports: :user])
@@ -120,6 +183,30 @@ defmodule KomunBackend.Doleances do
       if doleance.status != :brouillon do
         BuildingChannel.broadcast_doleance(building_id, doleance)
       end
+
+      {:ok, doleance}
+    end
+  end
+
+  @doc """
+  Variante "résidence" : crée une doléance rattachée à la résidence
+  (visible à tous les bâtiments). Pas de broadcast building-channel
+  (pas de canal résidence aujourd'hui ; les listes se rafraîchissent
+  via React-Query au prochain fetch).
+  """
+  def create_residence_doleance(residence_id, author_id, attrs) do
+    attrs =
+      attrs
+      |> Map.delete("building_id")
+      |> Map.merge(%{"residence_id" => residence_id, "author_id" => author_id})
+
+    with {:ok, doleance} <- %Doleance{} |> Doleance.changeset(attrs) |> Repo.insert() do
+      record_event(doleance.id, author_id, :created, %{
+        linked_incident_id: doleance.linked_incident_id
+      })
+
+      doleance =
+        Repo.preload(doleance, [:author, :files, :linked_incident, supports: :user])
 
       {:ok, doleance}
     end
