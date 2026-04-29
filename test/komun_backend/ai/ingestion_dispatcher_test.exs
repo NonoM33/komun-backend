@@ -54,6 +54,9 @@ defmodule KomunBackend.AI.IngestionDispatcherTest do
                )
 
       assert_received {:routine_request, conn}
+      # Regression: `Req.request/1` defaults to GET unless method is set,
+      # which made the routine endpoint reply 405 Method Not Allowed.
+      assert conn.method == "POST"
       assert ["Bearer test-token"] = Plug.Conn.get_req_header(conn, "authorization")
       assert ["application/json"] = Plug.Conn.get_req_header(conn, "content-type")
       # Anthropic beta gate + version pin for /v1/claude_code/routines/.../fire

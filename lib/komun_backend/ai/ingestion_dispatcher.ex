@@ -61,6 +61,7 @@ defmodule KomunBackend.AI.IngestionDispatcher do
 
     options =
       [
+        method: :post,
         url: url,
         json: payload,
         headers: headers,
