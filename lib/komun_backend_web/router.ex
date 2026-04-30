@@ -108,6 +108,16 @@ defmodule KomunBackendWeb.Router do
     post "/residences/:residence_id/doleances",  ResidenceCaseController, :create_doleance
     post "/residences/:residence_id/diligences", ResidenceCaseController, :create_diligence
 
+    # Annuaire de contacts par résidence (cabinet d'avocat, architecte,
+    # syndic alternatif…). Lecture = tous les membres, écriture = conseil
+    # syndical / syndic / super_admin (gating dans le controller).
+    get    "/residences/:residence_id/contacts",         ContactController, :index
+    post   "/residences/:residence_id/contacts",         ContactController, :create
+    get    "/residences/:residence_id/contacts/:id",     ContactController, :show
+    patch  "/residences/:residence_id/contacts/:id",     ContactController, :update
+    put    "/residences/:residence_id/contacts/:id",     ContactController, :update
+    delete "/residences/:residence_id/contacts/:id",     ContactController, :delete
+
     # Comparaison admin de modèles AI pour l'ingestion email.
     # Réservé super_admin (gating dans le controller).
     get  "/admin/ai/models",              AiCompareController, :list_models
