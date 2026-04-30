@@ -108,6 +108,11 @@ defmodule KomunBackendWeb.Router do
     post "/residences/:residence_id/doleances",  ResidenceCaseController, :create_doleance
     post "/residences/:residence_id/diligences", ResidenceCaseController, :create_diligence
 
+    # Comparaison admin de modèles AI pour l'ingestion email.
+    # Réservé super_admin (gating dans le controller).
+    get  "/admin/ai/models",              AiCompareController, :list_models
+    post "/admin/ai/compare-ingestion",   AiCompareController, :compare
+
     # Incidents
     resources "/buildings/:building_id/incidents", IncidentController, except: [:new, :edit] do
       post "/comments", IncidentCommentController, :create
