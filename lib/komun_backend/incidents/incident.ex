@@ -49,6 +49,13 @@ defmodule KomunBackend.Incidents.Incident do
     field :ai_model, :string
     field :ai_answer_confirmed_at, :utc_datetime
 
+    # Métadonnées de l'agent AI qui a ingéré ce dossier depuis un email
+    # (routine d'ingestion). Utilisé pour comparer les modèles et suivre
+    # le coût. Forme : `{model, provider, input_tokens, output_tokens,
+    # cost_usd, response_ms, decided_at}`. Voir migration
+    # AddIngestionMetadataToCases. Nil si le dossier a été créé à la main.
+    field :ai_ingestion_metadata, :map
+
     # Un incident vit soit sur un bâtiment précis, soit sur la résidence
     # entière (auquel cas tous les bâtiments le voient). Exactement un des
     # deux doit être set — verrou côté DB via le check_constraint
@@ -72,7 +79,7 @@ defmodule KomunBackend.Incidents.Incident do
                     :reporter_id, :assignee_id, :resolution_note, :visibility, :subtype,
                     :ai_answer, :ai_answered_at, :ai_model,
                     :ai_answer_confirmed_at, :ai_answer_confirmed_by_id,
-                    :micro_summary])
+                    :micro_summary, :ai_ingestion_metadata])
     |> validate_required([:title, :description, :category, :reporter_id])
     |> validate_length(:title, min: 5, max: 200)
     |> validate_scope_xor()

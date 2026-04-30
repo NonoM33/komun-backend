@@ -46,6 +46,11 @@ defmodule KomunBackend.Doleances.Doleance do
     field :ai_suggestions_generated_at, :utc_datetime
     field :ai_model, :string
 
+    # Voir doc dans `KomunBackend.Incidents.Incident.ai_ingestion_metadata`.
+    # Trace l'agent AI (modèle + tokens + coût) qui a créé ce dossier
+    # depuis un email entrant.
+    field :ai_ingestion_metadata, :map
+
     field :escalated_at, :utc_datetime
     field :resolved_at, :utc_datetime
     field :resolution_note, :string
@@ -95,7 +100,8 @@ defmodule KomunBackend.Doleances.Doleance do
       :building_id,
       :residence_id,
       :author_id,
-      :linked_incident_id
+      :linked_incident_id,
+      :ai_ingestion_metadata
     ])
     |> validate_required([:title, :description, :category, :author_id])
     |> validate_length(:title, min: 5, max: 200)
