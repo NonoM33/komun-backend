@@ -182,6 +182,7 @@ defmodule KomunBackendWeb.ResidenceCaseController do
       residence_id: inc.residence_id,
       building_id: inc.building_id,
       reporter_id: inc.reporter_id,
+      ai_ingestion_metadata: inc.ai_ingestion_metadata,
       inserted_at: inc.inserted_at,
       updated_at: inc.updated_at
     }
@@ -198,6 +199,7 @@ defmodule KomunBackendWeb.ResidenceCaseController do
       building_id: d.building_id,
       author_id: d.author_id,
       target_kind: d.target_kind,
+      ai_ingestion_metadata: d.ai_ingestion_metadata,
       inserted_at: d.inserted_at,
       updated_at: d.updated_at
     }
@@ -214,6 +216,7 @@ defmodule KomunBackendWeb.ResidenceCaseController do
       residence_id: d.residence_id,
       building_id: d.building_id,
       created_by_id: d.created_by_id,
+      ai_ingestion_metadata: d.ai_ingestion_metadata,
       inserted_at: d.inserted_at,
       updated_at: d.updated_at
     }

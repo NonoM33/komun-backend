@@ -26,6 +26,11 @@ defmodule KomunBackend.Diligences.Diligence do
     field :saisine_syndic_letter, :string
     field :mise_en_demeure_letter, :string
 
+    # Voir doc dans `KomunBackend.Incidents.Incident.ai_ingestion_metadata`.
+    # Trace l'agent AI (modèle + tokens + coût) qui a créé ce dossier
+    # depuis un email entrant.
+    field :ai_ingestion_metadata, :map
+
     # Une diligence vit soit sur un bâtiment précis, soit sur la résidence
     # entière. Verrou DB via le check_constraint `case_scope_xor` (cf.
     # migration AddResidenceScopeToCases).
@@ -64,7 +69,8 @@ defmodule KomunBackend.Diligences.Diligence do
       :building_id,
       :residence_id,
       :created_by_id,
-      :linked_incident_id
+      :linked_incident_id,
+      :ai_ingestion_metadata
     ])
     |> validate_required([:title, :created_by_id])
     |> validate_length(:title, min: 5, max: 200)
