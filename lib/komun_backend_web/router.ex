@@ -83,6 +83,16 @@ defmodule KomunBackendWeb.Router do
     post   "/residences/:id/merge",                       ResidenceController, :merge
     get    "/residences/:id/members",                     ResidenceController, :members
 
+    # Activité d'un voisin sur la résidence — vue agrégée des incidents
+    # et doléances qu'il a signalés / déposés sur l'ensemble des bâtiments.
+    # Réservé au conseil + syndic (gating dans le controller). Sert à la
+    # fiche voisin côté front. L'utilisateur peut consulter sa propre
+    # activité quel que soit son rôle.
+    get    "/residences/:residence_id/users/:user_id/incidents",
+                                                          ResidenceController, :user_incidents
+    get    "/residences/:residence_id/users/:user_id/doleances",
+                                                          ResidenceController, :user_doleances
+
     # Archives (lecture seule des votes CS de l'ancienne stack Rails)
     get    "/council-votes/archived",                     ArchivedCouncilVoteController, :index
     post   "/residences/:id/buildings/:building_id/attach",
