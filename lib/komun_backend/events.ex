@@ -24,7 +24,14 @@ defmodule KomunBackend.Events do
     EventParticipation,
     EventContribution,
     EventContributionClaim,
-    EventComment
+    EventComment,
+    EventEmailBlast
+  }
+
+  alias KomunBackend.Notifications.Jobs.{
+    EventReminderJob,
+    EventContributionGapJob,
+    EventThankYouJob
   }
 
   alias KomunBackendWeb.BuildingChannel
@@ -42,8 +49,12 @@ defmodule KomunBackend.Events do
     building_scopes: :building,
     participations: :user,
     contributions: [:created_by, claims: :user],
-    comments: :author
+    comments: :author,
+    email_blasts: :triggered_by
   ]
+
+  # Limite hard côté backend : 1 blast manuel par heure et par event.
+  @blast_rate_limit_seconds 3_600
 
   # ── Permissions ──────────────────────────────────────────────────────────
 
@@ -223,12 +234,218 @@ defmodule KomunBackend.Events do
     |> case do
       {:ok, %{event: event}} ->
         full = get_event!(event.id)
+        full = maybe_schedule_jobs(full)
         broadcast_event_to_scope(full, :created)
         {:ok, full}
 
       {:error, _step, changeset, _changes} ->
         {:error, changeset}
     end
+  end
+
+  # ── Programmation des jobs Oban ─────────────────────────────────────────
+  #
+  # On programme à la création / publication :
+  #   - reminder_j1 : 24h avant `starts_at` (push + email aux RSVP)
+  #   - gap_j3 : 72h avant `starts_at` (push smart « il manque X »)
+  #   - thank_you_j_plus_1 : 24h après `ends_at` (email merci)
+  #
+  # Si l'event est en draft, on attend la publication. Si l'event est
+  # créé moins de 24h avant son début, le reminder ne tournera tout
+  # simplement pas (Oban skip les jobs scheduled_at dans le passé).
+  defp maybe_schedule_jobs(%Event{status: :draft} = event), do: event
+
+  defp maybe_schedule_jobs(%Event{} = event) do
+    reminder_at = DateTime.add(event.starts_at, -24 * 3600, :second)
+    gap_at = DateTime.add(event.starts_at, -72 * 3600, :second)
+    thank_at = DateTime.add(event.ends_at, 24 * 3600, :second)
+
+    reminder_id = enqueue_event_job(EventReminderJob, event.id, reminder_at)
+    gap_id = enqueue_event_job(EventContributionGapJob, event.id, gap_at)
+    thank_id = enqueue_event_job(EventThankYouJob, event.id, thank_at)
+
+    case event
+         |> Event.changeset(%{
+           reminder_job_id: reminder_id,
+           gap_job_id: gap_id,
+           thank_you_job_id: thank_id
+         })
+         |> Repo.update() do
+      {:ok, updated} -> Repo.preload(updated, @event_preloads, force: true)
+      _ -> event
+    end
+  end
+
+  defp enqueue_event_job(worker, event_id, %DateTime{} = scheduled_at) do
+    case worker.new(%{event_id: event_id}, scheduled_at: scheduled_at) |> Oban.insert() do
+      {:ok, %Oban.Job{id: id}} -> id
+      _ -> nil
+    end
+  end
+
+  # ── Email blast manuel ──────────────────────────────────────────────────
+  #
+  # L'organisateur déclenche un envoi à TOUS les membres du scope (pas
+  # seulement les RSVP — le but est d'inviter ceux qui n'ont pas encore
+  # vu l'event). Rate-limité à 1/heure côté backend (défense contre un
+  # double-clic ou un script abusif), avec confirmation forte côté front.
+  def send_email_blast(event_id, %User{} = user, opts \\ []) do
+    ip = Keyword.get(opts, :ip)
+    custom_subject = Keyword.get(opts, :subject)
+    custom_body = Keyword.get(opts, :body)
+
+    with {:ok, event} <- fetch_event_for_blast(event_id),
+         :ok <- check_rate_limit(event_id),
+         :ok <- check_can_blast(event.id, user) do
+      do_send_blast(event, user, ip, custom_subject, custom_body)
+    end
+  end
+
+  defp fetch_event_for_blast(event_id) do
+    case get_event(event_id) do
+      nil -> {:error, :not_found}
+      %Event{status: :cancelled} -> {:error, :event_cancelled}
+      %Event{status: :draft} -> {:error, :event_draft}
+      event -> {:ok, event}
+    end
+  end
+
+  defp check_rate_limit(event_id) do
+    cutoff = DateTime.utc_now() |> DateTime.add(-@blast_rate_limit_seconds, :second)
+
+    recent? =
+      from(b in EventEmailBlast,
+        where:
+          b.event_id == ^event_id and b.kind == ^:manual_invite and b.sent_at >= ^cutoff,
+        limit: 1
+      )
+      |> Repo.exists?()
+
+    if recent?, do: {:error, :rate_limited}, else: :ok
+  end
+
+  defp check_can_blast(event_id, user) do
+    if can_organize?(event_id, user), do: :ok, else: {:error, :forbidden}
+  end
+
+  defp do_send_blast(event, user, ip, custom_subject, custom_body) do
+    recipient_user_ids = blast_recipient_user_ids(event)
+
+    users =
+      from(u in KomunBackend.Accounts.User, where: u.id in ^recipient_user_ids)
+      |> Repo.all()
+
+    Enum.each(users, fn u -> send_blast_email(event, u, custom_body) end)
+
+    %EventEmailBlast{}
+    |> EventEmailBlast.changeset(%{
+      event_id: event.id,
+      triggered_by_id: user.id,
+      kind: :manual_invite,
+      recipient_count: length(users),
+      subject: custom_subject || "Vous êtes invité : #{event.title}",
+      body_preview: blast_body_preview(custom_body, event),
+      triggered_ip: ip
+    })
+    |> Repo.insert()
+  end
+
+  defp blast_body_preview(body, _event) when is_binary(body) and body != "" do
+    String.slice(body, 0, 280)
+  end
+
+  defp blast_body_preview(_, %Event{description: desc}) when is_binary(desc) do
+    String.slice(desc, 0, 280)
+  end
+
+  defp blast_body_preview(_, _), do: nil
+
+  defp blast_recipient_user_ids(%Event{} = event) do
+    full = if event.building_scopes == [] or match?(%Ecto.Association.NotLoaded{}, event.building_scopes),
+                                                    do: get_event!(event.id), else: event
+
+    scope_buildings =
+      case full.building_scopes do
+        [] ->
+          from(b in KomunBackend.Buildings.Building,
+            where: b.residence_id == ^full.residence_id,
+            select: b.id
+          )
+          |> Repo.all()
+
+        list ->
+          Enum.map(list, & &1.building_id)
+      end
+
+    from(m in KomunBackend.Buildings.BuildingMember,
+      where: m.building_id in ^scope_buildings and m.is_active == true,
+      select: m.user_id,
+      distinct: true
+    )
+    |> Repo.all()
+  end
+
+  defp send_blast_email(event, user, custom_body) do
+    alias KomunBackend.Mailer
+    alias Swoosh.Email
+
+    body =
+      case custom_body do
+        nil -> event.description || ""
+        b when is_binary(b) -> b
+      end
+
+    Email.new()
+    |> Email.to(user.email)
+    |> Email.from({"Komun", "noreply@komun.app"})
+    |> Email.subject("Vous êtes invité : #{event.title}")
+    |> Email.html_body(blast_html(event, body))
+    |> Email.text_body(blast_text(event, body))
+    |> Mailer.deliver()
+
+    :ok
+  rescue
+    _ -> :ok
+  end
+
+  defp blast_html(event, body) do
+    alias KomunBackend.Notifications.EmailLayout
+
+    EmailLayout.render(
+      preheader: "Un événement de voisinage vous attend.",
+      body:
+        EmailLayout.h1(EmailLayout.escape(event.title)) <>
+          EmailLayout.p(format_when_html(event)) <>
+          (if event.location_label,
+             do: EmailLayout.p("📍 " <> EmailLayout.escape(event.location_label)),
+             else: "") <>
+          (if body != "", do: EmailLayout.p(EmailLayout.escape(body)), else: "") <>
+          EmailLayout.cta_button(
+            "https://komun.app/events/#{event.id}",
+            "Je participe ou je décline"
+          ) <>
+          EmailLayout.muted(
+            "Cet email a été envoyé par un organisateur de votre résidence via Komun."
+          )
+    )
+  end
+
+  defp blast_text(event, body) do
+    """
+    Vous êtes invité : #{event.title}
+
+    #{format_when_text(event)}#{if event.location_label, do: "\nLieu : " <> event.location_label, else: ""}
+
+    #{body}
+
+    Voir l'événement : https://komun.app/events/#{event.id}
+    """
+  end
+
+  defp format_when_html(event), do: format_when_text(event)
+
+  defp format_when_text(%Event{starts_at: s}) do
+    "📅 " <> Calendar.strftime(s, "%d/%m/%Y à %H:%M")
   end
 
   defp insert_scopes(multi, []), do: multi

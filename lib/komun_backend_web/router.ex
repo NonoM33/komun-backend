@@ -195,6 +195,8 @@ defmodule KomunBackendWeb.Router do
            EventController, :delete_comment
     post   "/buildings/:building_id/events/:event_id/comments/:id/reactions",
            EventController, :toggle_reaction
+    post   "/buildings/:building_id/events/:event_id/blast",
+           EventController, :send_email_blast
 
     # Announcements
     resources "/buildings/:building_id/announcements", AnnouncementController,
