@@ -32,6 +32,12 @@ defmodule KomunBackend.Events.Event do
     field :cancelled_at, :utc_datetime
     field :cancelled_reason, :string
 
+    # Liens vers les jobs Oban planifiés à la publication. Best-effort —
+    # nil tant qu'on n'a pas réussi à enqueue (ex. event encore en draft).
+    field :reminder_job_id, :integer
+    field :gap_job_id, :integer
+    field :thank_you_job_id, :integer
+
     belongs_to :residence, KomunBackend.Residences.Residence
     belongs_to :creator, KomunBackend.Accounts.User, foreign_key: :creator_id
 
@@ -40,6 +46,7 @@ defmodule KomunBackend.Events.Event do
     has_many :organizers, KomunBackend.Events.EventOrganizer
     has_many :contributions, KomunBackend.Events.EventContribution
     has_many :comments, KomunBackend.Events.EventComment
+    has_many :email_blasts, KomunBackend.Events.EventEmailBlast
 
     timestamps(type: :utc_datetime)
   end
@@ -59,7 +66,10 @@ defmodule KomunBackend.Events.Event do
     :allow_plus_ones,
     :kid_friendly,
     :residence_id,
-    :creator_id
+    :creator_id,
+    :reminder_job_id,
+    :gap_job_id,
+    :thank_you_job_id
   ]
 
   def changeset(event, attrs) do

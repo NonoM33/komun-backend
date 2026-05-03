@@ -394,6 +394,77 @@ defmodule KomunBackendWeb.EventController do
     end
   end
 
+  # POST /api/v1/buildings/:building_id/events/:event_id/blast
+  # body : %{ "subject" => "...", "body" => "...", "confirm" => "TITLE-COPIED" }
+  #
+  # Manual email blast aux membres du scope. Réservé organisateurs.
+  # Rate-limit hard 1/h côté contexte. Le frontend doit faire taper le
+  # titre de l'event avant d'activer le bouton (confirmation forte) — le
+  # backend vérifie aussi `confirm` non-vide pour défense en profondeur.
+  def send_email_blast(conn, %{"building_id" => building_id, "event_id" => event_id} = params) do
+    user = Guardian.Plug.current_resource(conn)
+
+    with :ok <- authorize_building(conn, building_id),
+         :ok <- ensure_visible(conn, event_id, building_id) do
+      cond do
+        not Events.can_organize?(event_id, user) ->
+          forbidden(conn, "Seul un organisateur peut déclencher un email à tous les voisins.")
+
+        params["confirm"] in [nil, ""] ->
+          unprocessable(conn, "Confirmation manquante (champ `confirm` requis).")
+
+        true ->
+          ip = ip_from_conn(conn)
+
+          case Events.send_email_blast(event_id, user,
+                 ip: ip,
+                 subject: params["subject"],
+                 body: params["body"]
+               ) do
+            {:ok, _blast} ->
+              event = Events.get_event!(event_id)
+              json(conn, %{data: event_json(event, user)})
+
+            {:error, :rate_limited} ->
+              conn
+              |> put_status(:too_many_requests)
+              |> json(%{
+                error:
+                  "Un email a déjà été envoyé pour cet événement il y a moins d'une heure."
+              })
+
+            {:error, :forbidden} ->
+              forbidden(conn, "Vous n'êtes pas organisateur.")
+
+            {:error, :event_cancelled} ->
+              unprocessable(conn, "L'événement est annulé — pas d'email envoyé.")
+
+            {:error, :event_draft} ->
+              unprocessable(conn, "Publiez l'événement avant de l'envoyer par email.")
+
+            {:error, :not_found} ->
+              not_found(conn)
+
+            {:error, %Ecto.Changeset{} = cs} ->
+              changeset_error(conn, cs)
+          end
+      end
+    end
+  end
+
+  defp ip_from_conn(conn) do
+    case Plug.Conn.get_req_header(conn, "x-forwarded-for") do
+      [first | _] ->
+        first |> String.split(",") |> List.first() |> String.trim()
+
+      _ ->
+        case conn.remote_ip do
+          {a, b, c, d} -> "#{a}.#{b}.#{c}.#{d}"
+          _ -> nil
+        end
+    end
+  end
+
   # POST /api/v1/buildings/:building_id/events/:event_id/comments/:id/reactions
   # body : %{ "emoji" => "❤️" }
   def toggle_reaction(conn, %{
@@ -526,9 +597,37 @@ defmodule KomunBackendWeb.EventController do
       comments: comments_json(event.comments),
       user_participation: user_participation,
       can_edit: can_edit,
+      email_blasts: blasts_json(event.email_blasts),
+      last_manual_blast_at: last_manual_blast_at(event.email_blasts),
       inserted_at: event.inserted_at,
       updated_at: event.updated_at
     }
+  end
+
+  defp blasts_json(%Ecto.Association.NotLoaded{}), do: []
+
+  defp blasts_json(list) when is_list(list) do
+    list
+    |> Enum.sort_by(& &1.sent_at, {:desc, DateTime})
+    |> Enum.map(fn b ->
+      %{
+        id: b.id,
+        kind: b.kind,
+        recipient_count: b.recipient_count,
+        subject: b.subject,
+        triggered_by_id: b.triggered_by_id,
+        sent_at: b.sent_at
+      }
+    end)
+  end
+
+  defp last_manual_blast_at(%Ecto.Association.NotLoaded{}), do: nil
+
+  defp last_manual_blast_at(list) when is_list(list) do
+    list
+    |> Enum.filter(&(&1.kind == :manual_invite))
+    |> Enum.map(& &1.sent_at)
+    |> Enum.max(DateTime, fn -> nil end)
   end
 
   defp count_going(participations) do
