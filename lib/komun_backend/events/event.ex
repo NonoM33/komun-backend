@@ -32,6 +32,11 @@ defmodule KomunBackend.Events.Event do
     field :cancelled_at, :utc_datetime
     field :cancelled_reason, :string
 
+    # Public concerné — vide = toute la résidence. Buckets connus :
+    # "conseil" | "proprietaire" | "bailleur" | "locataire".
+    # Filtre s'applique aux EMAILS / NOTIFICATIONS (pas à la visibilité).
+    field :target_resident_types, {:array, :string}, default: []
+
     # Liens vers les jobs Oban planifiés à la publication. Best-effort —
     # nil tant qu'on n'a pas réussi à enqueue (ex. event encore en draft).
     field :reminder_job_id, :integer
@@ -69,8 +74,11 @@ defmodule KomunBackend.Events.Event do
     :creator_id,
     :reminder_job_id,
     :gap_job_id,
-    :thank_you_job_id
+    :thank_you_job_id,
+    :target_resident_types
   ]
+
+  @valid_resident_types ~w(conseil proprietaire bailleur locataire)
 
   def changeset(event, attrs) do
     event
@@ -80,7 +88,66 @@ defmodule KomunBackend.Events.Event do
     |> validate_length(:location_label, max: 200)
     |> validate_max_participants()
     |> validate_chronology()
+    |> validate_resident_types()
   end
+
+  defp validate_resident_types(cs) do
+    case get_field(cs, :target_resident_types) do
+      nil ->
+        cs
+
+      list when is_list(list) ->
+        bad = Enum.reject(list, &(&1 in @valid_resident_types))
+
+        if bad == [] do
+          cs
+        else
+          add_error(cs, :target_resident_types,
+            "valeurs invalides : #{Enum.join(bad, ", ")} (autorisées : #{Enum.join(@valid_resident_types, ", ")})"
+          )
+        end
+
+      _ ->
+        add_error(cs, :target_resident_types, "doit être une liste")
+    end
+  end
+
+  @doc """
+  Buckets de type d'habitant pour un user, sur le contexte d'une
+  résidence donnée. Permet de matcher un user contre `target_resident_types`
+  d'un event sans dupliquer la logique entre l'envoi d'email, le push
+  J-1 et l'audit visuel. Un user peut appartenir à plusieurs buckets
+  (ex. propriétaire-occupant qui est AUSSI au conseil syndical).
+  """
+  def resident_buckets(%{role: role, status: status}, residence_role) do
+    out = []
+
+    out =
+      if role in [:president_cs, :membre_cs] or residence_role in [:president_cs, :membre_cs],
+        do: ["conseil" | out],
+        else: out
+
+    out =
+      case status do
+        :owner_occupant -> ["proprietaire" | out]
+        :owner_landlord -> ["bailleur" | out]
+        :tenant -> ["locataire" | out]
+        _ -> out
+      end
+
+    out =
+      case role do
+        :coproprietaire -> if "proprietaire" in out, do: out, else: ["proprietaire" | out]
+        :locataire -> if "locataire" in out, do: out, else: ["locataire" | out]
+        _ -> out
+      end
+
+    Enum.uniq(out)
+  end
+
+  def resident_buckets(_user, _role), do: []
+
+  def valid_resident_types, do: @valid_resident_types
 
   # `:cancelled_at` / `:cancelled_reason` ne passent QUE par le
   # `cancel_changeset/2` ci-dessous. Évite qu'un PATCH générique annule

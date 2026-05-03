@@ -14,10 +14,23 @@ defmodule KomunBackendWeb.Router do
     plug KomunBackendWeb.Plugs.RequireSuperAdmin
   end
 
+  pipeline :share do
+    plug :accepts, ["html"]
+  end
+
   # ── Health check ─────────────────────────────────────────────────────────
   scope "/api", KomunBackendWeb do
     pipe_through :api
     get "/health", HealthController, :check
+  end
+
+  # ── Public share previews (no auth, returns HTML with Open Graph tags
+  # for iMessage / WhatsApp / Slack previews). The actual SPA URL stays
+  # `https://komun.app/events/:id` — `/share/events/:id` is the URL on
+  # the backend domain que les bots peuvent crawler pour la preview.
+  scope "/share", KomunBackendWeb do
+    pipe_through :share
+    get "/events/:id", EventShareController, :show
   end
 
   # ── Public routes (no auth) ───────────────────────────────────────────────

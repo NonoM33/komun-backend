@@ -585,6 +585,7 @@ defmodule KomunBackendWeb.EventController do
       kid_friendly: event.kid_friendly,
       cancelled_at: event.cancelled_at,
       cancelled_reason: event.cancelled_reason,
+      target_resident_types: event.target_resident_types || [],
       residence_id: event.residence_id,
       creator_id: event.creator_id,
       creator: maybe_user(event.creator),

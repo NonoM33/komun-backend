@@ -377,12 +377,32 @@ defmodule KomunBackend.Events do
           Enum.map(list, & &1.building_id)
       end
 
-    from(m in KomunBackend.Buildings.BuildingMember,
-      where: m.building_id in ^scope_buildings and m.is_active == true,
-      select: m.user_id,
-      distinct: true
-    )
-    |> Repo.all()
+    member_pairs =
+      from(m in KomunBackend.Buildings.BuildingMember,
+        join: u in KomunBackend.Accounts.User,
+        on: u.id == m.user_id,
+        where: m.building_id in ^scope_buildings and m.is_active == true,
+        select: {u, m.role},
+        distinct: true
+      )
+      |> Repo.all()
+
+    case full.target_resident_types do
+      nil ->
+        Enum.map(member_pairs, fn {u, _r} -> u.id end) |> Enum.uniq()
+
+      [] ->
+        Enum.map(member_pairs, fn {u, _r} -> u.id end) |> Enum.uniq()
+
+      target_types when is_list(target_types) ->
+        member_pairs
+        |> Enum.filter(fn {u, role} ->
+          buckets = Event.resident_buckets(u, role)
+          Enum.any?(buckets, &(&1 in target_types))
+        end)
+        |> Enum.map(fn {u, _r} -> u.id end)
+        |> Enum.uniq()
+    end
   end
 
   defp send_blast_email(event, user, custom_body) do
