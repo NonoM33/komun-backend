@@ -25,12 +25,13 @@ defmodule KomunBackendWeb.Router do
   end
 
   # ── Public share previews (no auth, returns HTML with Open Graph tags
-  # for iMessage / WhatsApp / Slack previews). The actual SPA URL stays
-  # `https://komun.app/events/:id` — `/share/events/:id` is the URL on
-  # the backend domain que les bots peuvent crawler pour la preview.
+  # for iMessage / WhatsApp / Slack previews). The actual SPA URLs
+  # (`https://komun.app/<resource>/:id`) sont reroutées vers ces endpoints
+  # par nginx pour les bots OG (cf. `web_v2/Dockerfile`). Les humains
+  # continuent à voir le SPA normal.
   scope "/share", KomunBackendWeb do
     pipe_through :share
-    get "/events/:id", EventShareController, :show
+    get "/:resource/:id", ShareController, :show
   end
 
   # ── Public routes (no auth) ───────────────────────────────────────────────
