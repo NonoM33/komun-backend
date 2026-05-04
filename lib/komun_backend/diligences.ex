@@ -48,8 +48,38 @@ defmodule KomunBackend.Diligences do
   appelants non privilégiés.
   """
   def list_diligences(building_id, filters \\ %{}) do
+    # Inclut les diligences liées au bâtiment ET celles au niveau résidence
+    # (toutes vues par les rôles privilégiés ; le gating est dans le controller).
+    # Branchage conditionnel pour éviter le pb de type Postgrex quand
+    # le bâtiment n'a pas de résidence (cas legacy).
+    residence_id = KomunBackend.Buildings.get_residence_id(building_id)
+
+    base =
+      from(d in Diligence,
+        order_by: [desc: d.inserted_at],
+        preload: [:created_by, :linked_incident, steps: ^step_order(), files: ^file_order()]
+      )
+
+    base =
+      case residence_id do
+        nil -> where(base, [d], d.building_id == ^building_id)
+        rid -> where(base, [d], d.building_id == ^building_id or d.residence_id == ^rid)
+      end
+
+    base
+    |> apply_filter(:status, filters["status"])
+    |> apply_filter(:linked_incident_id, filters["linked_incident_id"])
+    |> apply_drafts_visibility(filters)
+    |> Repo.all()
+  end
+
+  @doc """
+  Liste les diligences rattachées à la résidence (pas à un bâtiment
+  précis). Le gating reste côté controller via `authorize_privileged`.
+  """
+  def list_residence_diligences(residence_id, filters \\ %{}) do
     from(d in Diligence,
-      where: d.building_id == ^building_id,
+      where: d.residence_id == ^residence_id,
       order_by: [desc: d.inserted_at],
       preload: [:created_by, :linked_incident, steps: ^step_order(), files: ^file_order()]
     )
@@ -135,6 +165,31 @@ defmodule KomunBackend.Diligences do
     end)
   end
 
+  @doc """
+  Variante "résidence" : crée une diligence (avec ses 9 étapes) à la
+  résidence entière au lieu d'un bâtiment. Mêmes invariants que
+  `create_diligence/3` (transaction + 9 steps en pending).
+  """
+  def create_residence_diligence(residence_id, %User{} = user, attrs) do
+    attrs =
+      attrs
+      |> normalize_attrs()
+      |> Map.delete("building_id")
+      |> Map.merge(%{"residence_id" => residence_id, "created_by_id" => user.id})
+
+    Repo.transaction(fn ->
+      with {:ok, diligence} <-
+             %Diligence{}
+             |> Diligence.create_changeset(attrs)
+             |> Repo.insert(),
+           :ok <- insert_initial_steps(diligence) do
+        get_diligence!(diligence.id)
+      else
+        {:error, changeset} -> Repo.rollback(changeset)
+      end
+    end)
+  end
+
   # On accepte indifféremment les attrs avec clés string (venant du
   # controller Plug) ou atom (venant des tests). Plus pratique pour
   # les tests qui n'ont pas besoin de tout stringifier.
@@ -172,6 +227,18 @@ defmodule KomunBackend.Diligences do
     |> Diligence.update_changeset(normalize_attrs(attrs))
     |> Repo.update()
     |> reload_on_success()
+  end
+
+  @doc """
+  Supprime une diligence. Les `diligence_steps` et `diligence_files`
+  tombent en cascade côté DB (FK `on_delete: :delete_all`), donc on
+  n'a pas à les nettoyer manuellement.
+
+  Réservé au caller privilégié — l'autorisation est faite côté
+  controller, pas ici. Renvoie `{:ok, diligence}` ou `{:error, cs}`.
+  """
+  def delete_diligence(%Diligence{} = diligence) do
+    Repo.delete(diligence)
   end
 
   @doc """

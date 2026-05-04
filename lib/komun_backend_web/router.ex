@@ -14,10 +14,23 @@ defmodule KomunBackendWeb.Router do
     plug KomunBackendWeb.Plugs.RequireSuperAdmin
   end
 
+  pipeline :share do
+    plug :accepts, ["html"]
+  end
+
   # ── Health check ─────────────────────────────────────────────────────────
   scope "/api", KomunBackendWeb do
     pipe_through :api
     get "/health", HealthController, :check
+  end
+
+  # ── Public share previews (no auth, returns HTML with Open Graph tags
+  # for iMessage / WhatsApp / Slack previews). The actual SPA URL stays
+  # `https://komun.app/events/:id` — `/share/events/:id` is the URL on
+  # the backend domain que les bots peuvent crawler pour la preview.
+  scope "/share", KomunBackendWeb do
+    pipe_through :share
+    get "/events/:id", EventShareController, :show
   end
 
   # ── Public routes (no auth) ───────────────────────────────────────────────
@@ -102,6 +115,17 @@ defmodule KomunBackendWeb.Router do
     # privileged (super_admin / syndic / conseil syndical).
     post "/buildings/:building_id/ingestions/files", IngestionController, :create
 
+    # Dossiers rattachés à la résidence entière (visible à tous les
+    # bâtiments). Voir `ResidenceCaseController` pour l'authz.
+    post "/residences/:residence_id/incidents",  ResidenceCaseController, :create_incident
+    post "/residences/:residence_id/doleances",  ResidenceCaseController, :create_doleance
+    post "/residences/:residence_id/diligences", ResidenceCaseController, :create_diligence
+
+    # Comparaison admin de modèles AI pour l'ingestion email.
+    # Réservé super_admin (gating dans le controller).
+    get  "/admin/ai/models",              AiCompareController, :list_models
+    post "/admin/ai/compare-ingestion",   AiCompareController, :compare
+
     # Incidents
     resources "/buildings/:building_id/incidents", IncidentController, except: [:new, :edit] do
       post "/comments", IncidentCommentController, :create
@@ -129,11 +153,12 @@ defmodule KomunBackendWeb.Router do
 
     # Diligences (procédure encadrée pour troubles anormaux du voisinage,
     # réservée au syndic + conseil syndical — gating dans le controller).
-    get   "/buildings/:building_id/diligences",        DiligenceController, :index
-    post  "/buildings/:building_id/diligences",        DiligenceController, :create
-    get   "/buildings/:building_id/diligences/:id",    DiligenceController, :show
-    patch "/buildings/:building_id/diligences/:id",    DiligenceController, :update
-    put   "/buildings/:building_id/diligences/:id",    DiligenceController, :update
+    get    "/buildings/:building_id/diligences",        DiligenceController, :index
+    post   "/buildings/:building_id/diligences",        DiligenceController, :create
+    get    "/buildings/:building_id/diligences/:id",    DiligenceController, :show
+    patch  "/buildings/:building_id/diligences/:id",    DiligenceController, :update
+    put    "/buildings/:building_id/diligences/:id",    DiligenceController, :update
+    delete "/buildings/:building_id/diligences/:id",    DiligenceController, :delete
 
     patch "/buildings/:building_id/diligences/:id/steps/:step_number",
           DiligenceController, :update_step
@@ -145,6 +170,46 @@ defmodule KomunBackendWeb.Router do
 
     post "/buildings/:building_id/diligences/:id/generate-letter",
          DiligenceController, :generate_letter
+
+    # Events (fête des voisins, AG, ateliers, réunions de conseil).
+    # Tous les nested endpoints partagent le scope /buildings/:building_id
+    # — le controller vérifie ensuite que l'event est bien visible depuis
+    # ce bâtiment (résidence ou scope explicite).
+    get    "/buildings/:building_id/events",        EventController, :index
+    post   "/buildings/:building_id/events",        EventController, :create
+    get    "/buildings/:building_id/events/:id",    EventController, :show
+    patch  "/buildings/:building_id/events/:id",    EventController, :update
+    put    "/buildings/:building_id/events/:id",    EventController, :update
+    delete "/buildings/:building_id/events/:id",    EventController, :delete
+
+    post "/buildings/:building_id/events/:event_id/cover", EventController, :upload_cover
+
+    post   "/buildings/:building_id/events/:event_id/participations",
+           EventController, :upsert_participation
+    delete "/buildings/:building_id/events/:event_id/participations",
+           EventController, :delete_participation
+
+    post   "/buildings/:building_id/events/:event_id/contributions",
+           EventController, :create_contribution
+    patch  "/buildings/:building_id/events/:event_id/contributions/:id",
+           EventController, :update_contribution
+    put    "/buildings/:building_id/events/:event_id/contributions/:id",
+           EventController, :update_contribution
+    delete "/buildings/:building_id/events/:event_id/contributions/:id",
+           EventController, :delete_contribution
+    post   "/buildings/:building_id/events/:event_id/contributions/:id/claim",
+           EventController, :claim_contribution
+    delete "/buildings/:building_id/events/:event_id/contributions/:id/claim",
+           EventController, :unclaim_contribution
+
+    post   "/buildings/:building_id/events/:event_id/comments",
+           EventController, :create_comment
+    delete "/buildings/:building_id/events/:event_id/comments/:id",
+           EventController, :delete_comment
+    post   "/buildings/:building_id/events/:event_id/comments/:id/reactions",
+           EventController, :toggle_reaction
+    post   "/buildings/:building_id/events/:event_id/blast",
+           EventController, :send_email_blast
 
     # Announcements
     resources "/buildings/:building_id/announcements", AnnouncementController,
