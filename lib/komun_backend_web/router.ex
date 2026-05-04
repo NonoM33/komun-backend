@@ -202,6 +202,20 @@ defmodule KomunBackendWeb.Router do
     delete "/buildings/:building_id/events/:event_id/contributions/:id/claim",
            EventController, :unclaim_contribution
 
+    # Claims indexés par leur uuid — permet à un voisin avec plusieurs
+    # claims sur la même rubrique de modifier / retirer une ligne précise
+    # (ex. retirer son « coca cherry » sans toucher au « coca zero »).
+    patch  "/buildings/:building_id/events/:event_id/contributions/:id/claims/:claim_id",
+           EventController, :update_claim
+    put    "/buildings/:building_id/events/:event_id/contributions/:id/claims/:claim_id",
+           EventController, :update_claim
+    delete "/buildings/:building_id/events/:event_id/contributions/:id/claims/:claim_id",
+           EventController, :delete_claim
+
+    # Réordonner les rubriques (drag & drop). Body : { "order": [id, …] }
+    post   "/buildings/:building_id/events/:event_id/contributions/reorder",
+           EventController, :reorder_contributions
+
     post   "/buildings/:building_id/events/:event_id/comments",
            EventController, :create_comment
     delete "/buildings/:building_id/events/:event_id/comments/:id",

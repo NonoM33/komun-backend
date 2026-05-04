@@ -21,6 +21,5 @@ defmodule KomunBackend.Events.EventContributionClaim do
     |> validate_required([:contribution_id, :user_id])
     |> validate_number(:quantity, greater_than: 0, less_than_or_equal_to: 999)
     |> validate_length(:comment, max: 280)
-    |> unique_constraint([:contribution_id, :user_id])
   end
 end
