@@ -245,7 +245,7 @@ defmodule KomunBackend.EventsTest do
         })
 
       {:ok, _} =
-        Events.upsert_claim(contribution.id, ctx.voisin.id, %{
+        Events.add_claim(contribution.id, ctx.voisin.id, %{
           "quantity" => 2,
           "comment" => "salade niçoise"
         })

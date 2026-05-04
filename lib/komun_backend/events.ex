@@ -628,20 +628,22 @@ defmodule KomunBackend.Events do
   end
 
   def get_contribution!(id), do: Repo.get!(EventContribution, id)
+  def get_claim!(id), do: Repo.get!(EventContributionClaim, id)
 
-  @doc "Claim ou met à jour le claim d'un user sur une contribution (upsert)."
-  def upsert_claim(contribution_id, user_id, attrs) do
+  @doc """
+  Crée un NOUVEAU claim. Plusieurs claims par (user, contribution) sont
+  permis : un voisin peut dire « 1 coca zero » puis « 1 coca cherry »
+  sous la même rubrique « Soft » — chacun sa ligne avec son libellé.
+  """
+  def add_claim(contribution_id, user_id, attrs) do
     attrs =
       attrs
       |> Map.put("contribution_id", contribution_id)
       |> Map.put("user_id", user_id)
 
-    case Repo.get_by(EventContributionClaim, contribution_id: contribution_id, user_id: user_id) do
-      nil -> %EventContributionClaim{}
-      existing -> existing
-    end
+    %EventContributionClaim{}
     |> EventContributionClaim.changeset(attrs)
-    |> Repo.insert_or_update()
+    |> Repo.insert()
     |> case do
       {:ok, claim} ->
         contribution = Repo.get!(EventContribution, contribution_id)
@@ -653,21 +655,111 @@ defmodule KomunBackend.Events do
     end
   end
 
-  def delete_claim(contribution_id, user_id) do
-    case Repo.get_by(EventContributionClaim, contribution_id: contribution_id, user_id: user_id) do
+  @doc "Met à jour un claim donné par son id (qty / commentaire)."
+  def update_claim_by_id(claim_id, attrs) do
+    claim = Repo.get!(EventContributionClaim, claim_id)
+
+    claim
+    |> EventContributionClaim.changeset(attrs)
+    |> Repo.update()
+    |> case do
+      {:ok, updated} ->
+        contribution = Repo.get!(EventContribution, updated.contribution_id)
+        broadcast_contribution(contribution.event_id)
+        {:ok, Repo.preload(updated, :user)}
+
+      err ->
+        err
+    end
+  end
+
+  @doc "Supprime un claim donné par son id."
+  def delete_claim_by_id(claim_id) do
+    case Repo.get(EventContributionClaim, claim_id) do
       nil ->
         {:ok, :noop}
 
       claim ->
         case Repo.delete(claim) do
-          {:ok, _} ->
-            contribution = Repo.get!(EventContribution, contribution_id)
+          {:ok, deleted} ->
+            contribution = Repo.get!(EventContribution, deleted.contribution_id)
             broadcast_contribution(contribution.event_id)
             {:ok, :deleted}
 
           err ->
             err
         end
+    end
+  end
+
+  # Variantes legacy : delete_claim par (contribution, user) — supprime
+  # TOUS les claims de ce user sur cette rubrique. Conservée pour la
+  # compat avec l'ancien endpoint REST `DELETE …/contributions/:id/claim`
+  # — un mobile / script qui pointe encore là continuera à fonctionner.
+  def delete_claim(contribution_id, user_id) do
+    deleted_count =
+      from(c in EventContributionClaim,
+        where: c.contribution_id == ^contribution_id and c.user_id == ^user_id
+      )
+      |> Repo.delete_all()
+      |> elem(0)
+
+    if deleted_count > 0 do
+      contribution = Repo.get!(EventContribution, contribution_id)
+      broadcast_contribution(contribution.event_id)
+      {:ok, :deleted}
+    else
+      {:ok, :noop}
+    end
+  end
+
+  @doc """
+  Réorganise les rubriques d'un event. Donne la liste ordonnée des
+  contribution_ids — la position de chaque rubrique est mise à jour
+  pour matcher l'ordre fourni. Les ids hors event ou inexistants sont
+  ignorés silencieusement.
+  """
+  def reorder_contributions(event_id, ordered_ids) when is_list(ordered_ids) do
+    Repo.transaction(fn ->
+      ordered_ids
+      |> Enum.with_index()
+      |> Enum.each(fn {cid, idx} ->
+        from(c in EventContribution,
+          where: c.id == ^cid and c.event_id == ^event_id
+        )
+        |> Repo.update_all(set: [position: idx, updated_at: DateTime.utc_now() |> DateTime.truncate(:second)])
+      end)
+    end)
+    |> case do
+      {:ok, _} ->
+        broadcast_contribution(event_id)
+        {:ok, get_event!(event_id)}
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  @doc """
+  HARD-delete d'un event : retire la ligne de la base, cascadant sur
+  toutes les tables filles. **Réservé aux super_admin / syndic_manager**
+  — gating à faire côté controller, ce contexte ne fait que la
+  mécanique. À utiliser quand `cancel_event` (soft-cancel) ne suffit
+  pas — par exemple un event créé par erreur, doublon, etc.
+  """
+  def purge_event(%Event{} = event) do
+    case Repo.delete(event) do
+      {:ok, deleted} ->
+        # Best-effort broadcast — les bâtiments du scope étant déjà
+        # cascade-deleted, on prend les ids avant.
+        Enum.each(event_target_building_ids(event), fn bid ->
+          BuildingChannel.broadcast_event(bid, deleted, :cancelled)
+        end)
+
+        {:ok, deleted}
+
+      err ->
+        err
     end
   end
 

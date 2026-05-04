@@ -84,10 +84,13 @@ defmodule KomunBackendWeb.EventController do
   end
 
   # DELETE /api/v1/buildings/:building_id/events/:id
-  # → soft-cancel : on garde l'event en base, on bascule en :cancelled.
+  # → soft-cancel par défaut. Avec `?purge=true`, hard-delete réservé
+  #   aux super_admin / syndic_manager (gating supplémentaire). Permet
+  #   à un admin de retirer un event créé par erreur (doublon, etc.).
   def delete(conn, %{"building_id" => building_id, "id" => id} = params) do
     user = Guardian.Plug.current_resource(conn)
     reason = Map.get(params, "reason", "Annulé par l'organisateur")
+    purge? = Map.get(params, "purge") in [true, "true", "1"]
 
     with :ok <- authorize_building(conn, building_id) do
       event = Events.get_event!(id)
@@ -95,6 +98,17 @@ defmodule KomunBackendWeb.EventController do
       cond do
         not event_visible_from_building?(event, building_id) ->
           not_found(conn)
+
+        purge? and user.role not in [:super_admin, :syndic_manager] ->
+          forbidden(conn,
+            "Suppression définitive réservée aux super_admin / syndic_manager. Utilise l'annulation simple sinon."
+          )
+
+        purge? ->
+          case Events.purge_event(event) do
+            {:ok, _} -> send_resp(conn, :no_content, "")
+            {:error, cs} -> changeset_error(conn, cs)
+          end
 
         not Events.can_organize?(event.id, user) ->
           forbidden(conn, "Seul un organisateur peut annuler cet événement.")
@@ -294,6 +308,10 @@ defmodule KomunBackendWeb.EventController do
   end
 
   # POST /api/v1/buildings/:building_id/events/:event_id/contributions/:id/claim
+  #
+  # Crée TOUJOURS un nouveau claim (plus d'upsert). Un voisin peut donc
+  # avoir plusieurs claims sur la même rubrique avec des libellés
+  # différents (« coca zero » + « coca cherry »).
   def claim_contribution(
         conn,
         %{"building_id" => building_id, "event_id" => event_id, "id" => id} = params
@@ -310,7 +328,7 @@ defmodule KomunBackendWeb.EventController do
           not_found(conn)
 
         true ->
-          case Events.upsert_claim(id, user.id, attrs) do
+          case Events.add_claim(id, user.id, attrs) do
             {:ok, _} ->
               event = Events.get_event!(event_id)
               json(conn, %{data: event_json(event, user)})
@@ -322,7 +340,77 @@ defmodule KomunBackendWeb.EventController do
     end
   end
 
+  # PATCH /api/v1/buildings/:building_id/events/:event_id/contributions/:id/claims/:claim_id
+  #
+  # Met à jour un claim précis (qty, commentaire). L'utilisateur ne peut
+  # toucher qu'à SES propres claims (les organisateurs aussi pour faire
+  # le ménage si besoin).
+  def update_claim(conn, %{
+        "building_id" => building_id,
+        "event_id" => event_id,
+        "id" => contribution_id,
+        "claim_id" => claim_id
+      } = params) do
+    user = Guardian.Plug.current_resource(conn)
+    attrs = Map.get(params, "claim", %{})
+
+    with :ok <- authorize_building(conn, building_id),
+         :ok <- ensure_visible(conn, event_id, building_id) do
+      claim = Events.get_claim!(claim_id)
+
+      cond do
+        claim.contribution_id != contribution_id ->
+          not_found(conn)
+
+        not (claim.user_id == user.id or Events.can_organize?(event_id, user)) ->
+          forbidden(conn, "Vous ne pouvez modifier que vos propres apports.")
+
+        true ->
+          case Events.update_claim_by_id(claim_id, attrs) do
+            {:ok, _} ->
+              event = Events.get_event!(event_id)
+              json(conn, %{data: event_json(event, user)})
+
+            {:error, cs} ->
+              changeset_error(conn, cs)
+          end
+      end
+    end
+  end
+
+  # DELETE /api/v1/buildings/:building_id/events/:event_id/contributions/:id/claims/:claim_id
+  def delete_claim(conn, %{
+        "building_id" => building_id,
+        "event_id" => event_id,
+        "id" => contribution_id,
+        "claim_id" => claim_id
+      }) do
+    user = Guardian.Plug.current_resource(conn)
+
+    with :ok <- authorize_building(conn, building_id),
+         :ok <- ensure_visible(conn, event_id, building_id) do
+      claim = Events.get_claim!(claim_id)
+
+      cond do
+        claim.contribution_id != contribution_id ->
+          not_found(conn)
+
+        not (claim.user_id == user.id or Events.can_organize?(event_id, user)) ->
+          forbidden(conn, "Vous ne pouvez retirer que vos propres apports.")
+
+        true ->
+          {:ok, _} = Events.delete_claim_by_id(claim_id)
+          event = Events.get_event!(event_id)
+          json(conn, %{data: event_json(event, user)})
+      end
+    end
+  end
+
   # DELETE /api/v1/buildings/:building_id/events/:event_id/contributions/:id/claim
+  #
+  # Endpoint legacy : supprime TOUS les claims du user courant sur cette
+  # rubrique. Pratique pour un bouton « je ne ramène plus rien sur cette
+  # rubrique » côté UI. Conservé pour la compat mobile.
   def unclaim_contribution(conn, %{
         "building_id" => building_id,
         "event_id" => event_id,
@@ -341,6 +429,31 @@ defmodule KomunBackendWeb.EventController do
         true ->
           {:ok, _} = Events.delete_claim(id, user.id)
           event = Events.get_event!(event_id)
+          json(conn, %{data: event_json(event, user)})
+      end
+    end
+  end
+
+  # POST /api/v1/buildings/:building_id/events/:event_id/contributions/reorder
+  # body : { "order": [contribution_id, …] }
+  def reorder_contributions(conn, %{
+        "building_id" => building_id,
+        "event_id" => event_id
+      } = params) do
+    user = Guardian.Plug.current_resource(conn)
+    order = Map.get(params, "order", [])
+
+    with :ok <- authorize_building(conn, building_id),
+         :ok <- ensure_visible(conn, event_id, building_id) do
+      cond do
+        not Events.can_organize?(event_id, user) ->
+          forbidden(conn, "Seuls les organisateurs peuvent réordonner les apports.")
+
+        not is_list(order) ->
+          unprocessable(conn, "`order` doit être un tableau d'ids.")
+
+        true ->
+          {:ok, event} = Events.reorder_contributions(event_id, order)
           json(conn, %{data: event_json(event, user)})
       end
     end
@@ -707,7 +820,12 @@ defmodule KomunBackendWeb.EventController do
   defp contributions_json(%Ecto.Association.NotLoaded{}), do: []
 
   defp contributions_json(list) when is_list(list) do
-    Enum.map(list, fn %EventContribution{} = c ->
+    list
+    # Tri par position (drag & drop côté UI), inserted_at en secondaire.
+    |> Enum.sort_by(fn %EventContribution{} = c ->
+      {c.position || 0, c.inserted_at}
+    end)
+    |> Enum.map(fn %EventContribution{} = c ->
       claims = claims_json(c.claims)
       claimed_qty = Enum.reduce(claims, 0, fn cl, acc -> acc + (cl.quantity || 0) end)
 
@@ -718,6 +836,7 @@ defmodule KomunBackendWeb.EventController do
         category: c.category,
         needed_quantity: c.needed_quantity,
         claimed_quantity: claimed_qty,
+        position: c.position,
         created_by_id: c.created_by_id,
         created_by: maybe_user(c.created_by),
         claims: claims,
