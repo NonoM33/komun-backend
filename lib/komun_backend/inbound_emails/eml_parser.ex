@@ -125,6 +125,12 @@ defmodule KomunBackend.InboundEmails.EmlParser do
     end
   end
 
+  # Cherche un `text/plain` dans une part. Si la part est elle-même
+  # un `multipart/*` (cas Gmail typique : multipart/related → multipart/
+  # alternative → text/plain + text/html + images), on récurse via
+  # `extract_text_part/2` au lieu de renvoyer nil — sans ça, le
+  # commentaire timeline contenait l'envelope MIME brute (boundaries,
+  # `Content-Type`, etc.) au lieu du texte lisible.
   defp part_text_plain(part) do
     {part_headers, part_body} =
       case String.split(part, ~r/\r?\n\r?\n/, parts: 2) do
@@ -137,6 +143,9 @@ defmodule KomunBackend.InboundEmails.EmlParser do
     cond do
       String.contains?(ct, "text/plain") ->
         decode_transfer(part_body, part_headers["content-transfer-encoding"])
+
+      String.contains?(ct, "multipart") ->
+        extract_text_part(part_body, part_headers["content-type"])
 
       true ->
         nil
