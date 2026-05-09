@@ -3,6 +3,7 @@ defmodule KomunBackendWeb.ResidenceController do
 
   alias KomunBackend.Residences
   alias KomunBackend.Residences.Residence
+  alias KomunBackend.{Doleances, Incidents}
 
   @privileged_roles [:president_cs, :membre_cs, :syndic_manager, :syndic_staff, :council]
 
@@ -230,6 +231,55 @@ defmodule KomunBackendWeb.ResidenceController do
     end
   end
 
+  # GET /api/v1/residences/:residence_id/users/:user_id/incidents
+  # Liste les incidents signalés par `user_id` sur tous les bâtiments
+  # de la résidence. Réservé au conseil / syndic / super_admin, ou à
+  # l'utilisateur lui-même (self-view). Confidentialité préservée :
+  # les incidents `:council_only` ne sortent pas de cette liste sauf
+  # si le viewer est le reporter — sinon les agréger sous un user_id
+  # explicite reviendrait à dévoiler l'auteur.
+  def user_incidents(conn, %{"residence_id" => residence_id, "user_id" => user_id}) do
+    user = Guardian.Plug.current_resource(conn)
+
+    case Residences.get_residence(residence_id) do
+      nil ->
+        conn |> put_status(:not_found) |> json(%{error: "not_found"})
+
+      _residence ->
+        if can_view_user_activity?(user, residence_id, user_id) do
+          incidents = Incidents.list_user_incidents_in_residence(residence_id, user_id, user)
+          json(conn, %{data: Enum.map(incidents, &user_incident_json/1)})
+        else
+          conn |> put_status(:forbidden) |> json(%{error: "forbidden"})
+        end
+    end
+  end
+
+  # GET /api/v1/residences/:residence_id/users/:user_id/doleances
+  def user_doleances(conn, %{"residence_id" => residence_id, "user_id" => user_id}) do
+    user = Guardian.Plug.current_resource(conn)
+
+    case Residences.get_residence(residence_id) do
+      nil ->
+        conn |> put_status(:not_found) |> json(%{error: "not_found"})
+
+      _residence ->
+        if can_view_user_activity?(user, residence_id, user_id) do
+          doleances = Doleances.list_user_doleances_in_residence(residence_id, user_id, user)
+          json(conn, %{data: Enum.map(doleances, &user_doleance_json/1)})
+        else
+          conn |> put_status(:forbidden) |> json(%{error: "forbidden"})
+        end
+    end
+  end
+
+  defp can_view_user_activity?(nil, _residence_id, _user_id), do: false
+
+  defp can_view_user_activity?(%{id: viewer_id} = user, residence_id, target_user_id) do
+    to_string(viewer_id) == to_string(target_user_id) or
+      Residences.privileged_member?(residence_id, user)
+  end
+
   # POST /api/v1/residences/:id/merge
   # Body: %{"source_ids" => ["uuid1", "uuid2", ...]}
   #
@@ -371,5 +421,40 @@ defmodule KomunBackendWeb.ResidenceController do
         String.replace(acc, "%{#{key}}", to_string(value))
       end)
     end)
+  end
+
+  # ── Slim JSON pour la fiche voisin ─────────────────────────────────────
+  # On ne renvoie que ce dont la fiche front a besoin pour lister
+  # l'activité (id, titre, statut, sévérité, catégorie, building_id,
+  # date). Pas de description, pas de commentaires, pas de fichiers,
+  # pas de `reporter`/`author` — l'identité est connue du caller (c'est
+  # lui qui a fourni `user_id`), inutile de la dupliquer dans chaque
+  # entrée et de gonfler le payload.
+
+  defp user_incident_json(inc) do
+    %{
+      id: inc.id,
+      title: inc.title,
+      category: inc.category,
+      severity: inc.severity,
+      status: inc.status,
+      building_id: inc.building_id,
+      visibility: inc.visibility,
+      inserted_at: inc.inserted_at,
+      resolved_at: inc.resolved_at
+    }
+  end
+
+  defp user_doleance_json(d) do
+    %{
+      id: d.id,
+      title: d.title,
+      category: d.category,
+      severity: d.severity,
+      status: d.status,
+      building_id: d.building_id,
+      inserted_at: d.inserted_at,
+      resolved_at: d.resolved_at
+    }
   end
 end
