@@ -208,6 +208,52 @@ defmodule KomunBackendWeb.AdminController do
 
   def update_user_role(conn, _), do: conn |> put_status(400) |> json(%{error: "role is required"})
 
+  # POST /api/v1/admin/users/:id/promote-to-komun-staff
+  #
+  # TICKET-1.3 — Wrapper idempotent pour onboarder un nouveau membre de
+  # l'équipe Komun (CSM, support, ops). Side effects côté future infra :
+  # email "Bienvenue dans l'équipe Komun" (à brancher avec EPIC-12 mailer).
+  #
+  # Rappel sécu : on REFUSE de "promouvoir" un super_admin — ce serait
+  # une rétrogradation silencieuse. Pour ça, l'admin doit utiliser
+  # `PUT /api/v1/admin/users/:id/role` explicitement.
+  def promote_to_komun_staff(conn, %{"id" => id}) do
+    actor = Guardian.Plug.current_resource(conn)
+
+    case Accounts.get_user(id) do
+      nil ->
+        conn |> put_status(404) |> json(%{error: "User not found"})
+
+      %User{role: :super_admin} ->
+        conn |> put_status(422) |> json(%{error: "cannot_demote_super_admin"})
+
+      %User{role: :komun_staff} = user ->
+        # Idempotent — pas de re-update, pas d'email de bienvenue dupliqué.
+        json(conn, %{data: user_json(user)})
+
+      %User{} ->
+        case Accounts.update_user_role(id, :komun_staff,
+               actor_id: actor && actor.id,
+               source: :admin_panel
+             ) do
+          {:ok, promoted} ->
+            require Logger
+
+            Logger.info(
+              "[komun_staff] promoted user_id=#{promoted.id} by actor_id=#{actor && actor.id}"
+            )
+
+            json(conn, %{data: user_json(promoted)})
+
+          {:error, changeset} when is_struct(changeset) ->
+            conn |> put_status(422) |> json(%{errors: format_errors(changeset)})
+
+          {:error, reason} ->
+            conn |> put_status(422) |> json(%{error: inspect(reason)})
+        end
+    end
+  end
+
   def list_buildings(conn, _) do
     buildings = Buildings.list_all_buildings()
     json(conn, %{data: Enum.map(buildings, &building_json/1)})
@@ -511,7 +557,7 @@ defmodule KomunBackendWeb.AdminController do
   end
 
   defp parse_role(role) do
-    valid = ~w(super_admin syndic_manager syndic_staff president_cs membre_cs coproprietaire locataire gardien prestataire)
+    valid = ~w(super_admin komun_staff syndic_manager syndic_staff president_cs membre_cs coproprietaire locataire gardien prestataire)
     if role in valid, do: {:ok, String.to_atom(role)}, else: {:error, :invalid_role}
   end
 
