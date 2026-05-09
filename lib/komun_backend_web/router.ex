@@ -158,6 +158,26 @@ defmodule KomunBackendWeb.Router do
     post "/buildings/:building_id/diligences/:id/generate-letter",
          DiligenceController, :generate_letter
 
+    # Ressources communes (ascenseur, salle, parking…) — config par
+    # syndic, validation des réservations par n'importe quel membre du
+    # conseil syndical. Préavis configurable par ressource (48h pour
+    # l'ascenseur déménagement par défaut).
+    get    "/buildings/:building_id/common-resources",       CommonResourceController, :index
+    get    "/buildings/:building_id/common-resources/admin", CommonResourceController, :index_admin
+    post   "/buildings/:building_id/common-resources",       CommonResourceController, :create
+    patch  "/common-resources/:id",                          CommonResourceController, :update
+    put    "/common-resources/:id",                          CommonResourceController, :update
+    delete "/common-resources/:id",                          CommonResourceController, :delete
+
+    get    "/common-resources/:resource_id/bookings", CommonResourceBookingController, :index_for_resource
+    post   "/common-resources/:resource_id/bookings", CommonResourceBookingController, :create
+    get    "/buildings/:building_id/bookings",        CommonResourceBookingController, :index_for_building
+    get    "/me/bookings",                            CommonResourceBookingController, :index_mine
+    get    "/bookings/:id",                           CommonResourceBookingController, :show
+    patch  "/bookings/:id/approve",                   CommonResourceBookingController, :approve
+    patch  "/bookings/:id/reject",                    CommonResourceBookingController, :reject
+    delete "/bookings/:id",                           CommonResourceBookingController, :cancel
+
     # Announcements
     resources "/buildings/:building_id/announcements", AnnouncementController,
       except: [:new, :edit]

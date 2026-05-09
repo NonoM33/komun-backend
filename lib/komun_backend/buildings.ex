@@ -43,9 +43,13 @@ defmodule KomunBackend.Buildings do
       |> ensure_join_code()
       |> ensure_residence()
 
-    %Building{}
-    |> Building.initial_changeset(attrs)
-    |> Repo.insert()
+    with {:ok, %Building{} = b} <-
+           %Building{}
+           |> Building.initial_changeset(attrs)
+           |> Repo.insert() do
+      seed_default_common_resources(b)
+      {:ok, b}
+    end
   end
 
   # Admin version: organization_id optional.
@@ -59,9 +63,45 @@ defmodule KomunBackend.Buildings do
     attrs = ensure_join_code(attrs)
     attrs = ensure_residence(attrs)
 
-    %Building{}
-    |> Building.initial_changeset(attrs)
-    |> Repo.insert()
+    with {:ok, %Building{} = b} <-
+           %Building{}
+           |> Building.initial_changeset(attrs)
+           |> Repo.insert() do
+      seed_default_common_resources(b)
+      {:ok, b}
+    end
+  end
+
+  # À la création d'un bâtiment, on seed une ressource « Ascenseur » par
+  # défaut (préavis 48h, exclusive, 8h-20h). C'est le cas d'usage qui
+  # motive la feature ; si le syndic n'en veut pas il peut la désactiver.
+  # Best-effort : un échec ici ne fait pas échouer la création du bâtiment.
+  defp seed_default_common_resources(%Building{id: id}) do
+    KomunBackend.CommonResources.create_resource(id, %{
+      "name" => "Ascenseur",
+      "description" =>
+        "Ressource exclusive — déménagements et gros transports. " <>
+          "Demande de réservation 48h à l'avance, validée par le conseil syndical.",
+      "kind" => "elevator",
+      "advance_notice_hours" => 48,
+      "max_duration_hours" => 8,
+      "allowed_hours_start" => 8,
+      "allowed_hours_end" => 20,
+      "exclusive" => true,
+      "active" => true
+    })
+    |> case do
+      {:ok, _} -> :ok
+      # Best-effort : on log mais on ne casse pas la création du bâtiment.
+      {:error, reason} ->
+        require Logger
+
+        Logger.warning(
+          "[buildings] seed_default_common_resources failed for #{id}: #{inspect(reason)}"
+        )
+
+        :ok
+    end
   end
 
   defp ensure_residence(attrs) when is_map(attrs) do
