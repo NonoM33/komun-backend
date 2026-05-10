@@ -411,6 +411,10 @@ defmodule KomunBackendWeb.Router do
     pipe_through [:authenticated, :require_komun_staff]
 
     get "/health", HealthController, :check
+
+    # TICKET-2.3 — liste des organisations clientes (paginée, filtres,
+    # recherche). Cf. backlog SaaS §7 EPIC-2.
+    get "/organizations", OrganizationController, :index
   end
 
   # ── Admin routes (super_admin only) ───────────────────────────────────────
