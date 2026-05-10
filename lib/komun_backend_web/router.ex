@@ -420,6 +420,11 @@ defmodule KomunBackendWeb.Router do
     # primary manager via magic-link (renvoyé pour transmission manuelle
     # tant que EPIC-12 mailer n'est pas livré).
     post "/organizations", OrganizationController, :create
+
+    # TICKET-6.1 — provisionnement d'une résidence (avec bâtiments) pour
+    # une org cliente. Les join_codes sont générés côté serveur (règle
+    # sacrée — cf. CLAUDE.md).
+    post "/organizations/:id/residences", OrganizationController, :provision_residence
   end
 
   # ── Admin routes (super_admin only) ───────────────────────────────────────

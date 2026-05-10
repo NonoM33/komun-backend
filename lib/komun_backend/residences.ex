@@ -37,7 +37,9 @@ defmodule KomunBackend.Residences do
   def get_residence_with_buildings!(id) do
     Residence
     |> Repo.get!(id)
-    |> Repo.preload(buildings: from(b in Building, where: b.is_active == true, order_by: [asc: b.name]))
+    |> Repo.preload(
+      buildings: from(b in Building, where: b.is_active == true, order_by: [asc: b.name])
+    )
   end
 
   def get_residence_by_join_code(code) when is_binary(code) do
@@ -92,6 +94,110 @@ defmodule KomunBackend.Residences do
     %Residence{}
     |> Residence.initial_changeset(ensure_join_code(attrs))
     |> Repo.insert()
+  end
+
+  @doc """
+  TICKET-6.1 — Provisionne une résidence cliente complète : la résidence
+  + ses bâtiments en une transaction unique. Génère un `join_code` unique
+  pour chacun (résidence + chaque building).
+
+  ⚠️ **Règle sacrée** : `join_code` n'est **jamais** lu depuis `attrs` —
+  on génère côté serveur. Si l'appelant en envoie un par accident ou
+  malveillance, il est strippé avant le `cast`.
+
+  Renvoie :
+  - `{:ok, %{residence, buildings}}`
+  - `{:error, :no_buildings_provided}`
+  - `{:error, :organization_not_found}`
+  - `{:error, :organization_suspended}`
+  - `{:error, %Ecto.Changeset{}}`
+  """
+  @spec create_with_buildings(binary(), map()) ::
+          {:ok, %{residence: Residence.t(), buildings: [Building.t()]}}
+          | {:error, atom()}
+          | {:error, Ecto.Changeset.t()}
+  def create_with_buildings(org_id, attrs) when is_binary(org_id) and is_map(attrs) do
+    buildings_input =
+      Map.get(attrs, "buildings") || Map.get(attrs, :buildings) || []
+
+    cond do
+      not is_list(buildings_input) or buildings_input == [] ->
+        {:error, :no_buildings_provided}
+
+      true ->
+        case Repo.get(KomunBackend.Organizations.Organization, org_id) do
+          nil ->
+            {:error, :organization_not_found}
+
+          %{is_active: false} ->
+            {:error, :organization_suspended}
+
+          %{} = org ->
+            do_provision_residence(org, attrs, buildings_input)
+        end
+    end
+  end
+
+  defp do_provision_residence(org, attrs, buildings_input) do
+    residence_attrs =
+      attrs
+      |> drop_keys(["buildings", :buildings])
+      |> strip_join_code()
+      |> stringify_keys()
+      |> Map.put("organization_id", org.id)
+
+    Repo.transaction(fn ->
+      case provision_residence_and_buildings(residence_attrs, org, buildings_input) do
+        {:ok, result} -> result
+        {:error, reason} -> Repo.rollback(reason)
+      end
+    end)
+    |> case do
+      {:ok, value} -> {:ok, value}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp provision_residence_and_buildings(residence_attrs, org, buildings_input) do
+    with {:ok, residence} <- create_residence(residence_attrs),
+         {:ok, buildings} <- provision_buildings(residence, org, buildings_input) do
+      {:ok, %{residence: residence, buildings: buildings}}
+    end
+  end
+
+  defp provision_buildings(residence, org, buildings_input) do
+    Enum.reduce_while(buildings_input, {:ok, []}, fn input, {:ok, acc} ->
+      attrs =
+        input
+        |> ensure_map()
+        |> strip_join_code()
+        |> stringify_keys()
+        |> Map.put("residence_id", residence.id)
+        |> Map.put("organization_id", org.id)
+        |> Map.put_new("city", residence.city)
+        |> Map.put_new("postal_code", residence.postal_code)
+        |> Map.put_new("country", residence.country)
+        |> ensure_join_code()
+
+      case %Building{}
+           |> Building.initial_changeset(attrs)
+           |> Repo.insert() do
+        {:ok, building} -> {:cont, {:ok, acc ++ [building]}}
+        {:error, %Ecto.Changeset{} = cs} -> {:halt, {:error, cs}}
+      end
+    end)
+  end
+
+  defp ensure_map(m) when is_map(m), do: m
+  defp ensure_map(_), do: %{}
+
+  defp drop_keys(map, keys), do: Enum.reduce(keys, map, &Map.delete(&2, &1))
+
+  defp stringify_keys(map) when is_map(map) do
+    Map.new(map, fn
+      {k, v} when is_atom(k) -> {Atom.to_string(k), v}
+      {k, v} -> {k, v}
+    end)
   end
 
   @doc """
@@ -174,8 +280,7 @@ defmodule KomunBackend.Residences do
       Enum.max_by(memberships, fn m -> role_priority.(m.role) end)
     end)
     |> Enum.sort_by(fn m ->
-      {-role_priority.(m.role),
-       String.downcase(m.user.last_name || m.user.email || "")}
+      {-role_priority.(m.role), String.downcase(m.user.last_name || m.user.email || "")}
     end)
   end
 
@@ -194,12 +299,19 @@ defmodule KomunBackend.Residences do
         from(b in Building,
           where: b.residence_id in ^sources and b.is_active == true
         )
-        |> Repo.update_all(set: [residence_id: target_residence_id, updated_at: DateTime.utc_now() |> DateTime.truncate(:second)])
+        |> Repo.update_all(
+          set: [
+            residence_id: target_residence_id,
+            updated_at: DateTime.utc_now() |> DateTime.truncate(:second)
+          ]
+        )
         |> elem(0)
 
       deleted =
         from(r in Residence, where: r.id in ^sources and r.is_active == true)
-        |> Repo.update_all(set: [is_active: false, updated_at: DateTime.utc_now() |> DateTime.truncate(:second)])
+        |> Repo.update_all(
+          set: [is_active: false, updated_at: DateTime.utc_now() |> DateTime.truncate(:second)]
+        )
         |> elem(0)
 
       %{moved: moved, deleted: deleted}
@@ -239,9 +351,10 @@ defmodule KomunBackend.Residences do
 
     case get_residence_by_join_code(normalized) do
       %Residence{} = residence ->
-        residence = Repo.preload(residence,
-          buildings: from(b in Building, where: b.is_active == true, order_by: [asc: b.name])
-        )
+        residence =
+          Repo.preload(residence,
+            buildings: from(b in Building, where: b.is_active == true, order_by: [asc: b.name])
+          )
 
         {:residence, residence, residence.buildings}
 

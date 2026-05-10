@@ -12,6 +12,7 @@ defmodule KomunBackendWeb.Staff.OrganizationController do
 
   alias KomunBackend.Accounts
   alias KomunBackend.Organizations
+  alias KomunBackend.Residences
 
   def index(conn, params) do
     case build_filters(params) do
@@ -105,6 +106,82 @@ defmodule KomunBackendWeb.Staff.OrganizationController do
         |> put_status(422)
         |> json(%{errors: format_errors(changeset)})
     end
+  end
+
+  @doc """
+  TICKET-6.1 — Provisionne une 1ère résidence (ou une supplémentaire)
+  pour une organisation cliente, avec ses bâtiments. Génère les
+  `join_code` côté serveur (règle sacrée — cf. CLAUDE.md).
+
+  Renvoie 201 `{data: {residence, buildings}}` avec les join_codes
+  pour transmission par le CSM (l'envoi auto par email arrivera avec
+  EPIC-12).
+  """
+  def provision_residence(conn, %{"id" => org_id} = params) do
+    case Residences.create_with_buildings(org_id, params) do
+      {:ok, %{residence: residence, buildings: buildings}} ->
+        conn
+        |> put_status(:created)
+        |> json(%{
+          data: %{
+            residence: residence_full_json(residence),
+            buildings: Enum.map(buildings, &building_summary_json/1)
+          }
+        })
+
+      {:error, :no_buildings_provided} ->
+        conn
+        |> put_status(422)
+        |> json(%{
+          error: "no_buildings_provided",
+          hint: "Au moins un bâtiment est requis (clé `buildings: [...]`)."
+        })
+
+      {:error, :organization_not_found} ->
+        conn |> put_status(404) |> json(%{error: "organization_not_found"})
+
+      {:error, :organization_suspended} ->
+        conn
+        |> put_status(422)
+        |> json(%{
+          error: "organization_suspended",
+          hint: "Réactivez l'organisation avant de provisionner une résidence."
+        })
+
+      {:error, %Ecto.Changeset{} = changeset} ->
+        conn
+        |> put_status(422)
+        |> json(%{errors: format_errors(changeset)})
+    end
+  end
+
+  defp residence_full_json(residence) do
+    %{
+      id: residence.id,
+      name: residence.name,
+      slug: residence.slug,
+      address: residence.address,
+      city: residence.city,
+      postal_code: residence.postal_code,
+      country: residence.country,
+      join_code: residence.join_code,
+      organization_id: residence.organization_id,
+      is_active: residence.is_active,
+      inserted_at: residence.inserted_at
+    }
+  end
+
+  defp building_summary_json(building) do
+    %{
+      id: building.id,
+      name: building.name,
+      address: building.address,
+      city: building.city,
+      postal_code: building.postal_code,
+      join_code: building.join_code,
+      residence_id: building.residence_id,
+      organization_id: building.organization_id
+    }
   end
 
   defp generate_manager_magic_link(manager) do
