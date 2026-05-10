@@ -14,10 +14,24 @@ defmodule KomunBackendWeb.Router do
     plug KomunBackendWeb.Plugs.RequireSuperAdmin
   end
 
+  pipeline :share do
+    plug :accepts, ["html"]
+  end
+
   # ── Health check ─────────────────────────────────────────────────────────
   scope "/api", KomunBackendWeb do
     pipe_through :api
     get "/health", HealthController, :check
+  end
+
+  # ── Public share previews (no auth, returns HTML with Open Graph tags
+  # for iMessage / WhatsApp / Slack previews). The actual SPA URLs
+  # (`https://komun.app/<resource>/:id`) sont reroutées vers ces endpoints
+  # par nginx pour les bots OG (cf. `web_v2/Dockerfile`). Les humains
+  # continuent à voir le SPA normal.
+  scope "/share", KomunBackendWeb do
+    pipe_through :share
+    get "/:resource/:id", ShareController, :show
   end
 
   # ── Public routes (no auth) ───────────────────────────────────────────────
@@ -177,6 +191,60 @@ defmodule KomunBackendWeb.Router do
     patch  "/bookings/:id/approve",                   CommonResourceBookingController, :approve
     patch  "/bookings/:id/reject",                    CommonResourceBookingController, :reject
     delete "/bookings/:id",                           CommonResourceBookingController, :cancel
+
+    # Events (fête des voisins, AG, ateliers, réunions de conseil).
+    # Tous les nested endpoints partagent le scope /buildings/:building_id
+    # — le controller vérifie ensuite que l'event est bien visible depuis
+    # ce bâtiment (résidence ou scope explicite).
+    get    "/buildings/:building_id/events",        EventController, :index
+    post   "/buildings/:building_id/events",        EventController, :create
+    get    "/buildings/:building_id/events/:id",    EventController, :show
+    patch  "/buildings/:building_id/events/:id",    EventController, :update
+    put    "/buildings/:building_id/events/:id",    EventController, :update
+    delete "/buildings/:building_id/events/:id",    EventController, :delete
+
+    post "/buildings/:building_id/events/:event_id/cover", EventController, :upload_cover
+
+    post   "/buildings/:building_id/events/:event_id/participations",
+           EventController, :upsert_participation
+    delete "/buildings/:building_id/events/:event_id/participations",
+           EventController, :delete_participation
+
+    post   "/buildings/:building_id/events/:event_id/contributions",
+           EventController, :create_contribution
+    patch  "/buildings/:building_id/events/:event_id/contributions/:id",
+           EventController, :update_contribution
+    put    "/buildings/:building_id/events/:event_id/contributions/:id",
+           EventController, :update_contribution
+    delete "/buildings/:building_id/events/:event_id/contributions/:id",
+           EventController, :delete_contribution
+    post   "/buildings/:building_id/events/:event_id/contributions/:id/claim",
+           EventController, :claim_contribution
+    delete "/buildings/:building_id/events/:event_id/contributions/:id/claim",
+           EventController, :unclaim_contribution
+
+    # Claims indexés par leur uuid — permet à un voisin avec plusieurs
+    # claims sur la même rubrique de modifier / retirer une ligne précise
+    # (ex. retirer son « coca cherry » sans toucher au « coca zero »).
+    patch  "/buildings/:building_id/events/:event_id/contributions/:id/claims/:claim_id",
+           EventController, :update_claim
+    put    "/buildings/:building_id/events/:event_id/contributions/:id/claims/:claim_id",
+           EventController, :update_claim
+    delete "/buildings/:building_id/events/:event_id/contributions/:id/claims/:claim_id",
+           EventController, :delete_claim
+
+    # Réordonner les rubriques (drag & drop). Body : { "order": [id, …] }
+    post   "/buildings/:building_id/events/:event_id/contributions/reorder",
+           EventController, :reorder_contributions
+
+    post   "/buildings/:building_id/events/:event_id/comments",
+           EventController, :create_comment
+    delete "/buildings/:building_id/events/:event_id/comments/:id",
+           EventController, :delete_comment
+    post   "/buildings/:building_id/events/:event_id/comments/:id/reactions",
+           EventController, :toggle_reaction
+    post   "/buildings/:building_id/events/:event_id/blast",
+           EventController, :send_email_blast
 
     # Announcements
     resources "/buildings/:building_id/announcements", AnnouncementController,
