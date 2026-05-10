@@ -425,6 +425,7 @@ defmodule KomunBackendWeb.Router do
     delete "/users/:id",                       AdminController, :delete_user
     post   "/users/:id/impersonate",           AdminController, :impersonate
     post   "/users/:id/magic-link",            AdminController, :generate_magic_link
+    post   "/users/:id/promote-to-komun-staff", AdminController, :promote_to_komun_staff
     post   "/council-votes/import",            ArchivedCouncilVoteController, :import
     delete "/users/:id/onboarding",            AdminController, :reset_onboarding
     get    "/buildings",                       AdminController, :list_buildings
