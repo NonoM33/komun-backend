@@ -14,6 +14,13 @@ defmodule KomunBackendWeb.Router do
     plug KomunBackendWeb.Plugs.RequireSuperAdmin
   end
 
+  # Pipeline pour le scope staff Komun (CSM, support, ops). Les routes
+  # `/api/v1/staff/*` exigent un user authentifié dont le rôle est
+  # `:komun_staff` ou `:super_admin` (superset). Voir TICKET-1.2 / 1.1.
+  pipeline :require_komun_staff do
+    plug KomunBackendWeb.Plugs.RequireKomunStaff
+  end
+
   pipeline :share do
     plug :accepts, ["html"]
   end
@@ -393,6 +400,17 @@ defmodule KomunBackendWeb.Router do
   scope "/api/v1", KomunBackendWeb do
     pipe_through :api
     post "/auth/dev-login", AuthController, :dev_login
+  end
+
+  # ── Staff routes (Komun staff portal — CSM, support, ops) ────────────────
+  # Tag OpenAPI : `Staff`. Pipeline `:authenticated` puis `:require_komun_staff`.
+  # Pour l'instant ce scope n'expose que `/health` (smoke-test bout-en-bout) ;
+  # les routes métier (`/organizations`, `/support-tickets`, etc.) viendront
+  # avec les tickets EPIC-2/4/5/6 du backlog SaaS.
+  scope "/api/v1/staff", KomunBackendWeb.Staff, as: :staff do
+    pipe_through [:authenticated, :require_komun_staff]
+
+    get "/health", HealthController, :check
   end
 
   # ── Admin routes (super_admin only) ───────────────────────────────────────
