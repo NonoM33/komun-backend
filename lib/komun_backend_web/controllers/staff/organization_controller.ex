@@ -10,6 +10,7 @@ defmodule KomunBackendWeb.Staff.OrganizationController do
 
   use KomunBackendWeb, :controller
 
+  alias KomunBackend.Accounts
   alias KomunBackend.Organizations
 
   def index(conn, params) do
@@ -47,6 +48,87 @@ defmodule KomunBackendWeb.Staff.OrganizationController do
 
       {:ok, filters}
     end
+  end
+
+  @doc """
+  TICKET-2.5 — Crée une nouvelle organisation cliente sales-led et
+  onboarde son `primary_manager` (rôle `:syndic_manager`). Renvoie
+  un magic-link à transmettre manuellement au manager (le mailer
+  arrive avec EPIC-12).
+  """
+  def create(conn, params) do
+    case Organizations.create_with_manager(params) do
+      {:ok, %{organization: org, primary_manager: manager}} ->
+        magic_link = generate_manager_magic_link(manager)
+
+        conn
+        |> put_status(:created)
+        |> json(%{
+          data: %{
+            organization: org_full_json(org),
+            primary_manager: user_json(manager),
+            magic_link: magic_link
+          }
+        })
+
+      {:error, :primary_manager_required} ->
+        conn |> put_status(422) |> json(%{error: "primary_manager_required"})
+
+      {:error, :invalid_plan} ->
+        conn
+        |> put_status(422)
+        |> json(%{
+          error: "invalid_plan",
+          allowed: Enum.map(Organizations.valid_plans(), &Atom.to_string/1)
+        })
+
+      {:error, :invalid_type} ->
+        conn
+        |> put_status(422)
+        |> json(%{
+          error: "invalid_type",
+          allowed: Enum.map(Organizations.valid_types(), &Atom.to_string/1)
+        })
+
+      {:error, :user_belongs_to_another_org} ->
+        conn
+        |> put_status(422)
+        |> json(%{
+          error: "user_belongs_to_another_org",
+          hint:
+            "Cet email est déjà rattaché à une autre organisation. " <>
+              "Contactez l'utilisateur pour clarifier avant de continuer."
+        })
+
+      {:error, %Ecto.Changeset{} = changeset} ->
+        conn
+        |> put_status(422)
+        |> json(%{errors: format_errors(changeset)})
+    end
+  end
+
+  defp generate_manager_magic_link(manager) do
+    case Accounts.create_magic_link(manager.email) do
+      {:ok, %{token: token, code: code}} ->
+        base = System.get_env("APP_BASE_URL", "https://komun.app")
+
+        %{
+          url: "#{base}/auth/verify?token=#{token}",
+          code: code,
+          email: manager.email,
+          expires_in_minutes: 15
+        }
+
+      {:error, _} ->
+        # Le magic-link n'est pas critique : la création de l'org doit
+        # rester un succès. Le staff pourra le regénérer via
+        # /admin/users/:id/magic-link.
+        nil
+    end
+  end
+
+  defp format_errors(changeset) do
+    Ecto.Changeset.traverse_errors(changeset, fn {msg, _} -> msg end)
   end
 
   defp parse_plan(nil), do: {:ok, nil}
@@ -87,6 +169,33 @@ defmodule KomunBackendWeb.Staff.OrganizationController do
       residences_count: Map.get(org, :residences_count, 0),
       members_count: Map.get(org, :members_count, 0),
       inserted_at: org.inserted_at
+    }
+  end
+
+  defp org_full_json(org) do
+    %{
+      id: org.id,
+      name: org.name,
+      slug: org.slug,
+      type: org.type,
+      siret: org.siret,
+      email: org.email,
+      phone: org.phone,
+      subscription_plan: org.subscription_plan,
+      subscription_expires_at: org.subscription_expires_at,
+      is_active: org.is_active,
+      inserted_at: org.inserted_at
+    }
+  end
+
+  defp user_json(user) do
+    %{
+      id: user.id,
+      email: user.email,
+      first_name: user.first_name,
+      last_name: user.last_name,
+      role: user.role,
+      organization_id: user.organization_id
     }
   end
 end

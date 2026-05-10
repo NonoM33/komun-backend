@@ -415,6 +415,11 @@ defmodule KomunBackendWeb.Router do
     # TICKET-2.3 — liste des organisations clientes (paginée, filtres,
     # recherche). Cf. backlog SaaS §7 EPIC-2.
     get "/organizations", OrganizationController, :index
+
+    # TICKET-2.5 — création sales-led d'une org cliente + onboarding du
+    # primary manager via magic-link (renvoyé pour transmission manuelle
+    # tant que EPIC-12 mailer n'est pas livré).
+    post "/organizations", OrganizationController, :create
   end
 
   # ── Admin routes (super_admin only) ───────────────────────────────────────
