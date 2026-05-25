@@ -14,6 +14,13 @@ defmodule KomunBackendWeb.Router do
     plug KomunBackendWeb.Plugs.RequireSuperAdmin
   end
 
+  # Pipeline pour le scope staff Komun (CSM, support, ops). Les routes
+  # `/api/v1/staff/*` exigent un user authentifié dont le rôle est
+  # `:komun_staff` ou `:super_admin` (superset). Voir TICKET-1.2 / 1.1.
+  pipeline :require_komun_staff do
+    plug KomunBackendWeb.Plugs.RequireKomunStaff
+  end
+
   pipeline :share do
     plug :accepts, ["html"]
   end
@@ -249,9 +256,16 @@ defmodule KomunBackendWeb.Router do
     get    "/buildings/:building_id/battles",            BattleController, :index
     post   "/buildings/:building_id/battles",            BattleController, :create
     get    "/buildings/:building_id/battles/:id",        BattleController, :show
+    patch  "/buildings/:building_id/battles/:id",        BattleController, :update
+    put    "/buildings/:building_id/battles/:id",        BattleController, :update
     delete "/buildings/:building_id/battles/:id",        BattleController, :delete
     post   "/buildings/:building_id/battles/:id/vote",   BattleController, :cast_vote
     post   "/buildings/:building_id/battles/:id/advance", BattleController, :advance
+
+    # Battles agrégées à l'échelle d'une résidence — la page `/battles`
+    # côté front est résidence-scope, pour qu'un membre CS de plusieurs
+    # bâtiments voie en un seul coup les tournois de toute la copro.
+    get    "/residences/:residence_id/battles",          BattleController, :residence_index
 
     # Projects (copro devis workflow) — groups devis by project, then starts
     # a vote on the chosen devis.
@@ -395,6 +409,21 @@ defmodule KomunBackendWeb.Router do
     post "/auth/dev-login", AuthController, :dev_login
   end
 
+  # ── Staff routes (Komun staff portal — CSM, support, ops) ────────────────
+  # Tag OpenAPI : `Staff`. Pipeline `:authenticated` puis `:require_komun_staff`.
+  # Pour l'instant ce scope n'expose que `/health` (smoke-test bout-en-bout) ;
+  # les routes métier (`/organizations`, `/support-tickets`, etc.) viendront
+  # avec les tickets EPIC-2/4/5/6 du backlog SaaS.
+  scope "/api/v1/staff", KomunBackendWeb.Staff, as: :staff do
+    pipe_through [:authenticated, :require_komun_staff]
+
+    get "/health", HealthController, :check
+
+    # TICKET-2.3 — liste des organisations clientes (paginée, filtres,
+    # recherche). Cf. backlog SaaS §7 EPIC-2.
+    get "/organizations", OrganizationController, :index
+  end
+
   # ── Admin routes (super_admin only) ───────────────────────────────────────
   scope "/api/v1/admin", KomunBackendWeb do
     pipe_through [:authenticated, :require_super_admin]
@@ -407,6 +436,7 @@ defmodule KomunBackendWeb.Router do
     delete "/users/:id",                       AdminController, :delete_user
     post   "/users/:id/impersonate",           AdminController, :impersonate
     post   "/users/:id/magic-link",            AdminController, :generate_magic_link
+    post   "/users/:id/promote-to-komun-staff", AdminController, :promote_to_komun_staff
     post   "/council-votes/import",            ArchivedCouncilVoteController, :import
     delete "/users/:id/onboarding",            AdminController, :reset_onboarding
     get    "/buildings",                       AdminController, :list_buildings

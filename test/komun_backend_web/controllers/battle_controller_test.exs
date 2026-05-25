@@ -291,4 +291,266 @@ defmodule KomunBackendWeb.BattleControllerTest do
       assert Repo.get(Battle, battle.id)
     end
   end
+
+  describe "GET /api/v1/residences/:rid/battles" do
+    # Régression pour l'incident prod du 2026-05-25 : la battle « Choix
+    # des brises vues » créée sur Bât. A était invisible à Coralie
+    # (membre_cs sur A ET B) parce que le frontend interrogeait
+    # `/buildings/B/battles` quand son building courant était B. La page
+    # `/battles` du front est désormais résidence-scope ; ce test garde
+    # la garantie que l'endpoint backend renvoie bien les battles des
+    # deux bâtiments en un seul appel.
+    test "renvoie les battles de TOUS les bâtiments où l'user est membre",
+         %{conn: conn} do
+      residence = insert_residence!()
+      building_a = insert_building!(residence)
+      building_b = insert_building!(residence)
+
+      creator = insert_user!(:syndic_manager)
+      {:ok, _} = Buildings.add_member(building_a.id, creator.id, :president_cs)
+      {:ok, _} = Buildings.add_member(building_b.id, creator.id, :president_cs)
+
+      {:ok, battle_a} =
+        Battles.create_battle(building_a.id, creator.id, %{
+          "title" => "Choix brise-vue Bât. A",
+          "options" => [%{"label" => "Gris"}, %{"label" => "Beige"}]
+        })
+
+      {:ok, battle_b} =
+        Battles.create_battle(building_b.id, creator.id, %{
+          "title" => "Choix peinture cage Bât. B",
+          "options" => [%{"label" => "Blanc"}, %{"label" => "Crème"}]
+        })
+
+      coralie = insert_user!(:membre_cs)
+      {:ok, _} = Buildings.add_member(building_a.id, coralie.id, :membre_cs)
+      {:ok, _} = Buildings.add_member(building_b.id, coralie.id, :membre_cs)
+
+      conn =
+        conn
+        |> authed(coralie)
+        |> get(~p"/api/v1/residences/#{residence.id}/battles")
+
+      assert %{"data" => data} = json_response(conn, 200)
+      ids = data |> Enum.map(& &1["id"]) |> Enum.sort()
+      assert ids == Enum.sort([battle_a.id, battle_b.id])
+    end
+
+    test "filtre les bâtiments où l'user n'est PAS membre",
+         %{conn: conn} do
+      # Bâtiment B n'a pas notre user → la battle de B ne doit pas
+      # remonter, même si la résidence est la même.
+      residence = insert_residence!()
+      building_a = insert_building!(residence)
+      building_b = insert_building!(residence)
+
+      creator = insert_user!(:syndic_manager)
+      {:ok, _} = Buildings.add_member(building_a.id, creator.id, :president_cs)
+      {:ok, _} = Buildings.add_member(building_b.id, creator.id, :president_cs)
+
+      {:ok, battle_a} =
+        Battles.create_battle(building_a.id, creator.id, %{
+          "title" => "Visible",
+          "options" => [%{"label" => "X"}, %{"label" => "Y"}]
+        })
+
+      {:ok, battle_b} =
+        Battles.create_battle(building_b.id, creator.id, %{
+          "title" => "Cachée",
+          "options" => [%{"label" => "X"}, %{"label" => "Y"}]
+        })
+
+      resident = insert_user!(:coproprietaire)
+      {:ok, _} = Buildings.add_member(building_a.id, resident.id, :coproprietaire)
+
+      conn =
+        conn
+        |> authed(resident)
+        |> get(~p"/api/v1/residences/#{residence.id}/battles")
+
+      assert %{"data" => data} = json_response(conn, 200)
+      ids = Enum.map(data, & &1["id"])
+      assert battle_a.id in ids
+      refute battle_b.id in ids
+    end
+
+    test "renvoie 403 à un user qui n'est membre d'aucun bâtiment",
+         %{conn: conn} do
+      residence = insert_residence!()
+      _building = insert_building!(residence)
+      outsider = insert_user!(:coproprietaire)
+
+      conn =
+        conn
+        |> authed(outsider)
+        |> get(~p"/api/v1/residences/#{residence.id}/battles")
+
+      assert json_response(conn, 403)
+    end
+
+    test "super_admin voit tout, même sans membership (admin audit)", %{conn: conn} do
+      residence = insert_residence!()
+      building = insert_building!(residence)
+
+      creator = insert_user!(:syndic_manager)
+      {:ok, _} = Buildings.add_member(building.id, creator.id, :president_cs)
+
+      {:ok, battle} =
+        Battles.create_battle(building.id, creator.id, %{
+          "title" => "Audit",
+          "options" => [%{"label" => "A"}, %{"label" => "B"}]
+        })
+
+      admin = insert_user!(:super_admin)
+
+      conn =
+        conn
+        |> authed(admin)
+        |> get(~p"/api/v1/residences/#{residence.id}/battles")
+
+      assert %{"data" => [returned]} = json_response(conn, 200)
+      assert returned["id"] == battle.id
+    end
+  end
+
+  describe "PATCH /api/v1/buildings/:bid/battles/:id (move to another building)" do
+    # Le cas type : la battle a été créée sur le mauvais bâtiment par
+    # erreur (la FAB « Créer » s'aligne sur le building courant du store).
+    # L'admin doit pouvoir la rebrancher sur le bon bâtiment sans perdre
+    # les votes déjà recueillis. Un voisin lambda n'a pas ce droit.
+    test "déplace la battle vers un autre bâtiment de la même résidence",
+         %{conn: conn} do
+      residence = insert_residence!()
+      building_a = insert_building!(residence)
+      building_b = insert_building!(residence)
+
+      admin = insert_user!(:syndic_manager)
+      {:ok, _} = Buildings.add_member(building_a.id, admin.id, :president_cs)
+      {:ok, _} = Buildings.add_member(building_b.id, admin.id, :president_cs)
+
+      {:ok, battle} =
+        Battles.create_battle(building_a.id, admin.id, %{
+          "title" => "À déplacer",
+          "options" => [%{"label" => "X"}, %{"label" => "Y"}]
+        })
+
+      conn =
+        conn
+        |> authed(admin)
+        |> patch(~p"/api/v1/buildings/#{building_a.id}/battles/#{battle.id}",
+          %{"battle" => %{"building_id" => building_b.id}}
+        )
+
+      assert %{"data" => data} = json_response(conn, 200)
+      assert data["building_id"] == building_b.id
+
+      # En DB aussi
+      assert Repo.get!(Battle, battle.id).building_id == building_b.id
+    end
+
+    test "refuse de déplacer vers un bâtiment d'une AUTRE résidence",
+         %{conn: conn} do
+      residence_x = insert_residence!()
+      residence_y = insert_residence!()
+
+      building_x = insert_building!(residence_x)
+      building_y = insert_building!(residence_y)
+
+      admin = insert_user!(:syndic_manager)
+      {:ok, _} = Buildings.add_member(building_x.id, admin.id, :president_cs)
+      {:ok, _} = Buildings.add_member(building_y.id, admin.id, :president_cs)
+
+      {:ok, battle} =
+        Battles.create_battle(building_x.id, admin.id, %{
+          "title" => "Pas téléportable",
+          "options" => [%{"label" => "X"}, %{"label" => "Y"}]
+        })
+
+      conn =
+        conn
+        |> authed(admin)
+        |> patch(~p"/api/v1/buildings/#{building_x.id}/battles/#{battle.id}",
+          %{"battle" => %{"building_id" => building_y.id}}
+        )
+
+      assert %{"error" => err} = json_response(conn, 422)
+      assert err =~ "même résidence"
+
+      # En DB on n'a rien bougé
+      assert Repo.get!(Battle, battle.id).building_id == building_x.id
+    end
+
+    test "refuse à un copropriétaire lambda (403)", %{conn: conn} do
+      residence = insert_residence!()
+      building_a = insert_building!(residence)
+      building_b = insert_building!(residence)
+
+      admin = insert_user!(:syndic_manager)
+      {:ok, _} = Buildings.add_member(building_a.id, admin.id, :president_cs)
+      {:ok, _} = Buildings.add_member(building_b.id, admin.id, :president_cs)
+
+      {:ok, battle} =
+        Battles.create_battle(building_a.id, admin.id, %{
+          "title" => "Pas touchable par tout le monde",
+          "options" => [%{"label" => "X"}, %{"label" => "Y"}]
+        })
+
+      voisin = insert_user!(:coproprietaire)
+      {:ok, _} = Buildings.add_member(building_a.id, voisin.id, :coproprietaire)
+
+      conn =
+        conn
+        |> authed(voisin)
+        |> patch(~p"/api/v1/buildings/#{building_a.id}/battles/#{battle.id}",
+          %{"battle" => %{"building_id" => building_b.id}}
+        )
+
+      assert json_response(conn, 403)
+      assert Repo.get!(Battle, battle.id).building_id == building_a.id
+    end
+
+    test "ignore tous les autres champs (cast strict)", %{conn: conn} do
+      # Sécurité : un PATCH qui essaie de bouger title/status/current_round
+      # au passage doit être no-op sur ces champs. Garantit qu'on ne casse
+      # pas l'avancement du tournoi via une mise à jour innocente.
+      residence = insert_residence!()
+      building_a = insert_building!(residence)
+      building_b = insert_building!(residence)
+
+      admin = insert_user!(:syndic_manager)
+      {:ok, _} = Buildings.add_member(building_a.id, admin.id, :president_cs)
+      {:ok, _} = Buildings.add_member(building_b.id, admin.id, :president_cs)
+
+      {:ok, battle} =
+        Battles.create_battle(building_a.id, admin.id, %{
+          "title" => "Titre originel",
+          "max_rounds" => 2,
+          "options" => [%{"label" => "X"}, %{"label" => "Y"}]
+        })
+
+      conn =
+        conn
+        |> authed(admin)
+        |> patch(~p"/api/v1/buildings/#{building_a.id}/battles/#{battle.id}",
+          %{
+            "battle" => %{
+              "building_id" => building_b.id,
+              "title" => "TITRE HACKE",
+              "status" => "finished",
+              "current_round" => 99,
+              "winning_option_label" => "PWNED"
+            }
+          }
+        )
+
+      assert json_response(conn, 200)
+
+      reloaded = Repo.get!(Battle, battle.id)
+      assert reloaded.building_id == building_b.id
+      assert reloaded.title == "Titre originel"
+      assert reloaded.status == :running
+      assert reloaded.current_round == 1
+      assert reloaded.winning_option_label == nil
+    end
+  end
 end

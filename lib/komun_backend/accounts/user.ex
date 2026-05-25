@@ -7,9 +7,22 @@ defmodule KomunBackend.Accounts.User do
 
   schema "users" do
     field :email, :string
+    # Rôle global du user. `:komun_staff` = employé Komun (CSM, support, ops)
+    # qui opère le portail staff sans avoir les privilèges destructeurs de
+    # `:super_admin`. Voir `KomunBackend.Auth.komun_staff?/1` pour la check.
     field :role, Ecto.Enum,
-      values: [:super_admin, :syndic_manager, :syndic_staff, :president_cs,
-               :membre_cs, :coproprietaire, :locataire, :gardien, :prestataire],
+      values: [
+        :super_admin,
+        :komun_staff,
+        :syndic_manager,
+        :syndic_staff,
+        :president_cs,
+        :membre_cs,
+        :coproprietaire,
+        :locataire,
+        :gardien,
+        :prestataire
+      ],
       default: :coproprietaire
 
     field :first_name, :string
@@ -22,8 +35,7 @@ defmodule KomunBackend.Accounts.User do
     field :last_chat_at, :utc_datetime
 
     # Profile — declared on the onboarding screen right after joining a residence.
-    field :status, Ecto.Enum,
-      values: [:owner_occupant, :owner_landlord, :tenant, :temporary]
+    field :status, Ecto.Enum, values: [:owner_occupant, :owner_landlord, :tenant, :temporary]
     field :apartment_number, :string
     field :floor, :integer
 
@@ -33,6 +45,7 @@ defmodule KomunBackend.Accounts.User do
     # JSON destinés aux autres voisins.
     field :stripe_connect_account_id, :string
     field :stripe_connect_onboarded_at, :utc_datetime
+
     field :stripe_connect_status, Ecto.Enum,
       values: [:none, :pending, :verified, :rejected],
       default: :none
@@ -44,17 +57,30 @@ defmodule KomunBackend.Accounts.User do
 
   def changeset(user, attrs) do
     user
-    |> cast(attrs, [:email, :role, :first_name, :last_name, :phone, :avatar_url,
-                    :locale, :push_tokens, :organization_id,
-                    :status, :apartment_number, :floor,
-                    :stripe_connect_account_id, :stripe_connect_onboarded_at,
-                    :stripe_connect_status])
+    |> cast(attrs, [
+      :email,
+      :role,
+      :first_name,
+      :last_name,
+      :phone,
+      :avatar_url,
+      :locale,
+      :push_tokens,
+      :organization_id,
+      :status,
+      :apartment_number,
+      :floor,
+      :stripe_connect_account_id,
+      :stripe_connect_onboarded_at,
+      :stripe_connect_status
+    ])
     |> validate_required([:email])
     |> validate_format(:email, ~r/^[^\s]+@[^\s]+$/, message: "must be a valid email")
     |> validate_length(:email, max: 160)
     |> unique_constraint(:email)
-    |> validate_inclusion(:role, ~w(super_admin syndic_manager syndic_staff president_cs
-                                    membre_cs coproprietaire locataire gardien prestataire)a)
+    |> validate_inclusion(:role, ~w(super_admin komun_staff syndic_manager syndic_staff
+                                    president_cs membre_cs coproprietaire locataire
+                                    gardien prestataire)a)
     |> validate_number(:floor, greater_than_or_equal_to: -5, less_than_or_equal_to: 60)
     |> validate_length(:first_name, max: 80)
     |> validate_length(:last_name, max: 80)

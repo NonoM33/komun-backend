@@ -1,7 +1,7 @@
 defmodule KomunBackendWeb.BattleController do
   use KomunBackendWeb, :controller
 
-  alias KomunBackend.{Battles, Buildings}
+  alias KomunBackend.{Battles, Buildings, Residences}
   alias KomunBackend.Battles.Battle
   alias KomunBackend.Votes.{Uploads, Vote}
   alias KomunBackend.Auth.Guardian
@@ -14,6 +14,29 @@ defmodule KomunBackendWeb.BattleController do
 
     with :ok <- authorize_building(conn, building_id) do
       battles = Battles.list_battles(building_id)
+      json(conn, %{data: Enum.map(battles, &battle_json(&1, user.id))})
+    end
+  end
+
+  # GET /api/v1/residences/:residence_id/battles
+  #
+  # Renvoie les battles agrégées de TOUS les bâtiments de la résidence
+  # dont l'user est membre. Une résidence multi-bâtiments ne doit pas
+  # forcer Coralie (membre_cs sur A et B) à switcher de bâtiment dans
+  # la sidebar pour voir une battle créée sur un autre bâtiment — c'est
+  # exactement ce qui faisait disparaître « Choix des brises vues » côté
+  # Bât. B (incident prod 2026-05-25).
+  def residence_index(conn, %{"residence_id" => residence_id}) do
+    user = Guardian.Plug.current_resource(conn)
+
+    with :ok <- authorize_residence(conn, residence_id) do
+      battles =
+        if user.role == :super_admin do
+          Battles.list_residence_battles_for_admin(residence_id)
+        else
+          Battles.list_residence_battles(residence_id, user.id)
+        end
+
       json(conn, %{data: Enum.map(battles, &battle_json(&1, user.id))})
     end
   end
@@ -70,6 +93,82 @@ defmodule KomunBackendWeb.BattleController do
           |> put_status(:unprocessable_entity)
           |> json(%{error: inspect(reason)})
       end
+    end
+  end
+
+  # PATCH /api/v1/buildings/:building_id/battles/:id
+  #
+  # Pour la V1, le seul champ « modifiable » d'une battle existante
+  # est le bâtiment cible (`building_id`) — l'admin a créé la battle
+  # sur le mauvais bâtiment par erreur (la FAB « Créer » s'aligne sur
+  # le building courant du store) et veut la rebrancher sans détruire
+  # les votes déjà recueillis. Le déplacement est gated CS + syndic ;
+  # le nouveau bâtiment doit appartenir à la même résidence (vérifié
+  # dans `Battles.move_battle/2`).
+  def update(conn, %{"building_id" => building_id, "id" => id} = params) do
+    user = Guardian.Plug.current_resource(conn)
+
+    cond do
+      # cf. authorize_building/2 — `Buildings.member?` + super_admin
+      not (user.role == :super_admin or Buildings.member?(building_id, user.id)) ->
+        conn |> put_status(:forbidden) |> json(%{error: "Forbidden"}) |> halt()
+
+      # Move = action privilégiée (CS + syndic + super_admin) — pas
+      # question qu'un copropriétaire lambda téléporte la battle du
+      # voisin. NB : `require_privileged/1` renvoie `:unauthorized`
+      # mais le `with` du reste du module ne le gère pas (bug latent
+      # documenté dans le test) ; on inline le check ici.
+      user.role not in @privileged_roles ->
+        conn |> put_status(:forbidden) |> json(%{error: "Forbidden"}) |> halt()
+
+      true ->
+        battle = Battles.get_battle!(id)
+
+        cond do
+          battle.building_id != building_id ->
+            conn |> put_status(:not_found) |> json(%{error: "Not found"}) |> halt()
+
+          true ->
+            attrs = Map.get(params, "battle", params)
+            new_building_id = Map.get(attrs, "building_id")
+
+            cond do
+              is_nil(new_building_id) or new_building_id == "" ->
+                conn
+                |> put_status(:unprocessable_entity)
+                |> json(%{error: "building_id requis"})
+
+              true ->
+                case Battles.move_battle(id, new_building_id) do
+                  {:ok, moved} ->
+                    json(conn, %{data: battle_json(moved, user.id)})
+
+                  {:error, :same_building} ->
+                    json(conn, %{data: battle_json(battle, user.id)})
+
+                  {:error, :different_residence} ->
+                    conn
+                    |> put_status(:unprocessable_entity)
+                    |> json(%{
+                      error:
+                        "Une battle ne peut être déplacée qu'entre bâtiments d'une même résidence"
+                    })
+
+                  {:error, :building_not_found} ->
+                    conn |> put_status(:not_found) |> json(%{error: "Bâtiment introuvable"})
+
+                  {:error, %Ecto.Changeset{} = cs} ->
+                    conn
+                    |> put_status(:unprocessable_entity)
+                    |> json(%{errors: format_errors(cs)})
+
+                  {:error, reason} ->
+                    conn
+                    |> put_status(:unprocessable_entity)
+                    |> json(%{error: inspect(reason)})
+                end
+            end
+        end
     end
   end
 
@@ -261,6 +360,29 @@ defmodule KomunBackendWeb.BattleController do
     else
       conn |> put_status(403) |> json(%{error: "Forbidden"}) |> halt()
     end
+  end
+
+  # Un user est "membre de la résidence" dès qu'il est membre actif
+  # d'au moins un de ses bâtiments. On accepte aussi le super_admin pour
+  # rester aligné avec `authorize_building/2`.
+  defp authorize_residence(conn, residence_id) do
+    user = Guardian.Plug.current_resource(conn)
+
+    cond do
+      user.role == :super_admin ->
+        :ok
+
+      residence_member?(residence_id, user.id) ->
+        :ok
+
+      true ->
+        conn |> put_status(403) |> json(%{error: "Forbidden"}) |> halt()
+    end
+  end
+
+  defp residence_member?(residence_id, user_id) do
+    Residences.list_user_residences(user_id)
+    |> Enum.any?(&(&1.id == residence_id))
   end
 
   defp require_privileged(user) do
