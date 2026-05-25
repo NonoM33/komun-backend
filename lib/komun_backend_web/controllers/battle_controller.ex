@@ -70,29 +70,51 @@ defmodule KomunBackendWeb.BattleController do
   def create(conn, %{"building_id" => building_id} = params) do
     user = Guardian.Plug.current_resource(conn)
 
-    with :ok <- authorize_building(conn, building_id),
-         :ok <- require_privileged(user) do
-      attrs = build_create_attrs(params)
+    # Fix sécurité UX (2026-05-25) : `require_privileged/1` retourne
+    # `{:error, :unauthorized}` mais le `with` ne le gérait pas (pas
+    # de clause `else`), ce qui faisait fall-through et faisait crasher
+    # l'action en 500. Le copro lambda voyait donc « Erreur serveur »
+    # au lieu d'un 403 propre — alarmant. La battle n'était pas créée
+    # (le `with` n'atteignait pas `Battles.create_battle/3`), donc pas
+    # de faille de sécurité — juste UX trompeuse.
+    cond do
+      not (user.role == :super_admin or Buildings.member?(building_id, user.id)) ->
+        conn |> put_status(:forbidden) |> json(%{error: "Forbidden"}) |> halt()
 
-      case Battles.create_battle(building_id, user.id, attrs) do
-        {:ok, %Battle{} = battle} ->
-          conn |> put_status(:created) |> json(%{data: battle_json(battle, user.id)})
+      user.role not in @privileged_roles ->
+        conn
+        |> put_status(:forbidden)
+        |> json(%{
+          error: "Seuls les membres du conseil syndical et le syndic peuvent lancer une battle"
+        })
+        |> halt()
 
-        {:error, :need_at_least_two_options} ->
-          conn
-          |> put_status(:unprocessable_entity)
-          |> json(%{error: "Une battle exige au moins 2 options"})
+      true ->
+        do_create_battle(conn, user, building_id, params)
+    end
+  end
 
-        {:error, %Ecto.Changeset{} = cs} ->
-          conn
-          |> put_status(:unprocessable_entity)
-          |> json(%{errors: format_errors(cs)})
+  defp do_create_battle(conn, user, building_id, params) do
+    attrs = build_create_attrs(params)
 
-        {:error, reason} ->
-          conn
-          |> put_status(:unprocessable_entity)
-          |> json(%{error: inspect(reason)})
-      end
+    case Battles.create_battle(building_id, user.id, attrs) do
+      {:ok, %Battle{} = battle} ->
+        conn |> put_status(:created) |> json(%{data: battle_json(battle, user.id)})
+
+      {:error, :need_at_least_two_options} ->
+        conn
+        |> put_status(:unprocessable_entity)
+        |> json(%{error: "Une battle exige au moins 2 options"})
+
+      {:error, %Ecto.Changeset{} = cs} ->
+        conn
+        |> put_status(:unprocessable_entity)
+        |> json(%{errors: format_errors(cs)})
+
+      {:error, reason} ->
+        conn
+        |> put_status(:unprocessable_entity)
+        |> json(%{error: inspect(reason)})
     end
   end
 
@@ -279,26 +301,38 @@ defmodule KomunBackendWeb.BattleController do
   def advance(conn, %{"building_id" => building_id, "id" => id}) do
     user = Guardian.Plug.current_resource(conn)
 
-    with :ok <- authorize_building(conn, building_id),
-         :ok <- require_privileged(user) do
-      battle = Battles.get_battle!(id)
+    # Même fix sécurité UX que `create/2` — `with` ne hagit pas
+    # `{:error, :unauthorized}` proprement, donc on inline les checks
+    # pour renvoyer un 403 net.
+    cond do
+      not (user.role == :super_admin or Buildings.member?(building_id, user.id)) ->
+        conn |> put_status(:forbidden) |> json(%{error: "Forbidden"}) |> halt()
 
-      cond do
-        battle.building_id != building_id ->
-          conn |> put_status(:not_found) |> json(%{error: "Not found"}) |> halt()
+      user.role not in @privileged_roles ->
+        conn
+        |> put_status(:forbidden)
+        |> json(%{error: "Réservé au conseil syndical et au syndic"})
+        |> halt()
 
-        true ->
-          case Battles.advance_battle!(id) do
-            {:noop, b} ->
-              json(conn, %{data: battle_json(b, user.id), state: "noop"})
+      true ->
+        battle = Battles.get_battle!(id)
 
-            {:advanced, b} ->
-              json(conn, %{data: battle_json(b, user.id), state: "advanced"})
+        cond do
+          battle.building_id != building_id ->
+            conn |> put_status(:not_found) |> json(%{error: "Not found"}) |> halt()
 
-            {:finished, b} ->
-              json(conn, %{data: battle_json(b, user.id), state: "finished"})
-          end
-      end
+          true ->
+            case Battles.advance_battle!(id) do
+              {:noop, b} ->
+                json(conn, %{data: battle_json(b, user.id), state: "noop"})
+
+              {:advanced, b} ->
+                json(conn, %{data: battle_json(b, user.id), state: "advanced"})
+
+              {:finished, b} ->
+                json(conn, %{data: battle_json(b, user.id), state: "finished"})
+            end
+        end
     end
   end
 
