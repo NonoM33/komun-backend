@@ -173,8 +173,11 @@ defmodule KomunBackendWeb.BattleController do
   end
 
   # POST /api/v1/buildings/:building_id/battles/:id/vote
-  # Body : { option_id: "uuid" } — vote pour l'option du round courant.
-  def cast_vote(conn, %{"building_id" => building_id, "id" => id, "option_id" => option_id}) do
+  # Body :
+  #   * `{ "option_id": "uuid" }`          → single_choice (legacy)
+  #   * `{ "option_ids": ["uuid", ...] }`  → multiple_choice (battle.vote_mode)
+  #                                          ; liste vide = abstention.
+  def cast_vote(conn, %{"building_id" => building_id, "id" => id} = params) do
     user = Guardian.Plug.current_resource(conn)
 
     with :ok <- authorize_building(conn, building_id) do
@@ -185,7 +188,9 @@ defmodule KomunBackendWeb.BattleController do
           conn |> put_status(:not_found) |> json(%{error: "Not found"}) |> halt()
 
         true ->
-          case Battles.cast_vote(id, user.id, option_id) do
+          payload = cast_vote_payload(params)
+
+          case Battles.cast_vote(id, user.id, payload) do
             {:ok, _} ->
               fresh = Battles.get_battle!(id)
               json(conn, %{data: battle_json(fresh, user.id)})
@@ -200,6 +205,22 @@ defmodule KomunBackendWeb.BattleController do
               |> put_status(:unprocessable_entity)
               |> json(%{error: "Le round est clôturé"})
 
+            {:error, :single_choice_expects_one_option} ->
+              conn
+              |> put_status(:unprocessable_entity)
+              |> json(%{
+                error:
+                  "Cette battle est en mode choix unique — envoie option_id (ou option_ids à 1 élément max)"
+              })
+
+            {:error, {:invalid_option_ids, ids}} ->
+              conn
+              |> put_status(:unprocessable_entity)
+              |> json(%{
+                error: "Option(s) inconnue(s) pour ce round",
+                invalid_option_ids: ids
+              })
+
             {:error, cs} ->
               conn
               |> put_status(:unprocessable_entity)
@@ -208,6 +229,12 @@ defmodule KomunBackendWeb.BattleController do
       end
     end
   end
+
+  # Extrait le payload de vote (option unique ou array) du params.
+  # On accepte aussi `option_ids` à 1 élément pour les clients multi-savvy.
+  defp cast_vote_payload(%{"option_ids" => ids}) when is_list(ids), do: ids
+  defp cast_vote_payload(%{"option_id" => id}), do: id
+  defp cast_vote_payload(_), do: []
 
   # DELETE /api/v1/buildings/:building_id/battles/:id
   #
@@ -401,6 +428,8 @@ defmodule KomunBackendWeb.BattleController do
       max_rounds: b.max_rounds,
       current_round: b.current_round,
       quorum_pct: b.quorum_pct,
+      vote_mode: b.vote_mode,
+      allow_none: b.allow_none,
       winning_option_label: b.winning_option_label,
       building_id: b.building_id,
       created_by: maybe_user(b.created_by),
@@ -415,11 +444,20 @@ defmodule KomunBackendWeb.BattleController do
     }
   end
 
+  # Nombre de VOTANTS uniques sur le round courant. En multi-choice
+  # un user peut avoir N responses (une par option cochée) — pour le
+  # taux de participation il faut compter les user_id distincts, pas
+  # les rows. Sinon participation_pct surévalue (et peut dépasser 100%).
   defp current_vote_responses_count(%Battle{} = b) do
     case Battles.current_vote(b) do
-      nil -> nil
-      %Vote{responses: %Ecto.Association.NotLoaded{}} -> nil
-      %Vote{responses: r} -> length(r)
+      nil ->
+        nil
+
+      %Vote{responses: %Ecto.Association.NotLoaded{}} ->
+        nil
+
+      %Vote{responses: r} ->
+        r |> Enum.map(& &1.user_id) |> Enum.uniq() |> length()
     end
   end
 
@@ -428,17 +466,31 @@ defmodule KomunBackendWeb.BattleController do
     responses = safe_list(v.responses)
     counts = Enum.frequencies_by(responses, & &1.option_id)
 
-    own_response =
-      Enum.find(responses, fn r -> r.user_id == user_id end)
-      |> case do
-        nil -> nil
-        r -> r.option_id
-      end
+    own_option_ids =
+      responses
+      |> Enum.filter(&(&1.user_id == user_id))
+      |> Enum.map(& &1.option_id)
+      |> Enum.uniq()
+
+    # `own_option_id` (singulier, legacy) = première option votée par
+    # l'user, ou nil. Conservé pour ne pas casser les anciens clients
+    # qui ne savent pas lire `own_option_ids`. Le nouveau champ
+    # pluriel est la source de vérité pour le multi-choice.
+    own_option_id = List.first(own_option_ids)
 
     # Pour le round courant on cache les compteurs si la battle est
     # configurée comme anonyme — on évite de teaser les résidents avant
     # la fin. V1 : pas de mode anonyme côté battle, donc on expose tout.
     is_current = v.round_number == battle.current_round and battle.status == :running
+
+    # Nb de votants uniques sur ce round (cf. current_vote_responses_count
+    # pour le rationnel). En single_choice c'est == length(responses), en
+    # multi_choice ça peut être plus petit.
+    total_voters =
+      responses
+      |> Enum.map(& &1.user_id)
+      |> Enum.uniq()
+      |> length()
 
     %{
       id: v.id,
@@ -448,10 +500,13 @@ defmodule KomunBackendWeb.BattleController do
       title: v.title,
       options:
         Enum.map(options, fn o ->
-          Map.put(o, :votes, Map.get(counts, o.id, 0))
+          o
+          |> Map.put(:votes, Map.get(counts, o.id, 0))
+          |> Map.put(:is_none, o.position == Battles.none_option_position())
         end),
-      total_votes: length(responses),
-      own_option_id: own_response,
+      total_votes: total_voters,
+      own_option_id: own_option_id,
+      own_option_ids: own_option_ids,
       is_current: is_current
     }
   end
