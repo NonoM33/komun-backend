@@ -7,6 +7,7 @@ defmodule KomunBackendWeb.ShareController do
       GET /share/events/:id     → titre + description + photo de l'event
       GET /share/incidents/:id  → titre + description + 1ère photo
       GET /share/doleances/:id  → titre + description + 1ère photo
+      GET /share/battles/:id    → titre + round/options + photo 1ère option
 
   Pas d'authentification : un lien partagé est public par construction.
   Si la ressource est confidentielle (incident `:council_only`,
@@ -17,6 +18,8 @@ defmodule KomunBackendWeb.ShareController do
 
   use KomunBackendWeb, :controller
 
+  alias KomunBackend.Battles
+  alias KomunBackend.Battles.Battle
   alias KomunBackend.Doleances
   alias KomunBackend.Doleances.Doleance
   alias KomunBackend.Events
@@ -41,6 +44,7 @@ defmodule KomunBackendWeb.ShareController do
   defp build_payload("events", id), do: build_event_payload(id)
   defp build_payload("incidents", id), do: build_incident_payload(id)
   defp build_payload("doleances", id), do: build_doleance_payload(id)
+  defp build_payload("battles", id), do: build_battle_payload(id)
   defp build_payload(_, _), do: generic()
 
   defp build_event_payload(event_id) do
@@ -102,6 +106,33 @@ defmodule KomunBackendWeb.ShareController do
     end
   end
 
+  defp build_battle_payload(battle_id) do
+    # Battles est public par construction (un membre du bâtiment peut
+    # voter) — mais on retombe sur la preview générique si la battle est
+    # `:cancelled` ou inconnue, pour ne pas surfacer un état mort.
+    case safe_get_battle(battle_id) do
+      nil ->
+        generic()
+
+      %Battle{status: :cancelled} ->
+        generic()
+
+      %Battle{} = battle ->
+        {
+          battle.title,
+          format_battle_description(battle),
+          battle_cover(battle),
+          spa_url("battles", battle.id)
+        }
+    end
+  end
+
+  defp safe_get_battle(id) do
+    Battles.get_battle!(id)
+  rescue
+    _ -> nil
+  end
+
   defp build_doleance_payload(doleance_id) do
     case safe_get_doleance(doleance_id) do
       nil ->
@@ -158,6 +189,61 @@ defmodule KomunBackendWeb.ShareController do
   defp format_doleance_description(%Doleance{} = d) do
     base = d.description || "Une réclamation collective déposée sur Komun."
     "#{base}" |> String.slice(0, 280)
+  end
+
+  defp format_battle_description(%Battle{} = b) do
+    round = "⚔️ Round #{b.current_round}/#{b.max_rounds}"
+
+    options_n =
+      case current_round_options(b) do
+        nil -> nil
+        n -> "#{n} option#{if n > 1, do: "s"} en lice"
+      end
+
+    status =
+      case b.status do
+        :finished ->
+          if b.winning_option_label,
+            do: "🏆 Gagnant : #{b.winning_option_label}",
+            else: "Terminée"
+
+        _ ->
+          "Vote en cours"
+      end
+
+    base = b.description || "Choisissez ensemble parmi plusieurs options."
+
+    [status, round, options_n]
+    |> Enum.reject(&is_nil/1)
+    |> Enum.join(" · ")
+    |> Kernel.<>("\n\n#{base}")
+    |> String.slice(0, 280)
+  end
+
+  defp current_round_options(%Battle{} = b) do
+    case Battles.current_vote(b) do
+      nil -> nil
+      vote -> length(vote.options || [])
+    end
+  end
+
+  # Photo de la 1ère option du round courant qui a une pièce jointe —
+  # pour qu'iMessage affiche un visuel des choix proposés plutôt que le
+  # logo générique. Si aucune option n'a de photo, on retombe sur la
+  # cover par défaut.
+  defp battle_cover(%Battle{} = b) do
+    with vote when not is_nil(vote) <- Battles.current_vote(b),
+         options when is_list(options) <- vote.options,
+         first_with_photo when not is_nil(first_with_photo) <-
+           options
+           |> Enum.sort_by(& &1.position)
+           |> Enum.find(fn o ->
+             is_binary(o.attachment_url) and o.attachment_url != ""
+           end) do
+      cover_or_default(first_with_photo.attachment_url)
+    else
+      _ -> @default_image
+    end
   end
 
   defp severity_label(:critical), do: "🔴 Critique"
