@@ -22,7 +22,7 @@ defmodule KomunBackend.Battles do
   alias KomunBackend.Battles.Battle
   alias KomunBackend.Votes
   alias KomunBackend.Votes.{Vote, VoteResponse}
-  alias KomunBackend.Buildings.BuildingMember
+  alias KomunBackend.Buildings.{Building, BuildingMember}
 
   @default_round_duration_days 3
   @default_max_rounds 2
@@ -33,6 +33,48 @@ defmodule KomunBackend.Battles do
   def list_battles(building_id) do
     from(b in Battle,
       where: b.building_id == ^building_id,
+      order_by: [desc: b.inserted_at]
+    )
+    |> Repo.all()
+    |> preload_battles()
+  end
+
+  @doc """
+  Liste les battles de tous les bâtiments d'une résidence dont l'user
+  est membre actif. Sert la page `/battles` côté front : Coralie qui est
+  `membre_cs` dans Bât. A et Bât. B doit voir les battles des deux d'un
+  coup, sans avoir à switcher de bâtiment dans la sidebar (incident
+  signalé en prod le 2026-05-25 — la battle « Choix des brises vues »
+  créée sur Bât. A était invisible quand le building courant était B).
+  """
+  def list_residence_battles(residence_id, user_id) do
+    # `BuildingMember` a un index unique `(building_id, user_id)` donc le
+    # join ne duplique pas — pas besoin de `distinct`. Cela préserve un
+    # `ORDER BY inserted_at` propre.
+    from(b in Battle,
+      join: bld in Building,
+      on: bld.id == b.building_id,
+      join: m in BuildingMember,
+      on:
+        m.building_id == bld.id and m.user_id == ^user_id and
+          m.is_active == true,
+      where: bld.residence_id == ^residence_id and bld.is_active == true,
+      order_by: [desc: b.inserted_at]
+    )
+    |> Repo.all()
+    |> preload_battles()
+  end
+
+  @doc """
+  Variante super_admin : pas de filtre par membership — un super_admin
+  peut auditer toutes les battles d'une résidence même s'il n'est membre
+  d'aucun bâtiment.
+  """
+  def list_residence_battles_for_admin(residence_id) do
+    from(b in Battle,
+      join: bld in Building,
+      on: bld.id == b.building_id,
+      where: bld.residence_id == ^residence_id and bld.is_active == true,
       order_by: [desc: b.inserted_at]
     )
     |> Repo.all()

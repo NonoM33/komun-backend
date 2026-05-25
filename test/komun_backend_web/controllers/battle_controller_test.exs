@@ -291,4 +291,125 @@ defmodule KomunBackendWeb.BattleControllerTest do
       assert Repo.get(Battle, battle.id)
     end
   end
+
+  describe "GET /api/v1/residences/:rid/battles" do
+    # Régression pour l'incident prod du 2026-05-25 : la battle « Choix
+    # des brises vues » créée sur Bât. A était invisible à Coralie
+    # (membre_cs sur A ET B) parce que le frontend interrogeait
+    # `/buildings/B/battles` quand son building courant était B. La page
+    # `/battles` du front est désormais résidence-scope ; ce test garde
+    # la garantie que l'endpoint backend renvoie bien les battles des
+    # deux bâtiments en un seul appel.
+    test "renvoie les battles de TOUS les bâtiments où l'user est membre",
+         %{conn: conn} do
+      residence = insert_residence!()
+      building_a = insert_building!(residence)
+      building_b = insert_building!(residence)
+
+      creator = insert_user!(:syndic_manager)
+      {:ok, _} = Buildings.add_member(building_a.id, creator.id, :president_cs)
+      {:ok, _} = Buildings.add_member(building_b.id, creator.id, :president_cs)
+
+      {:ok, battle_a} =
+        Battles.create_battle(building_a.id, creator.id, %{
+          "title" => "Choix brise-vue Bât. A",
+          "options" => [%{"label" => "Gris"}, %{"label" => "Beige"}]
+        })
+
+      {:ok, battle_b} =
+        Battles.create_battle(building_b.id, creator.id, %{
+          "title" => "Choix peinture cage Bât. B",
+          "options" => [%{"label" => "Blanc"}, %{"label" => "Crème"}]
+        })
+
+      coralie = insert_user!(:membre_cs)
+      {:ok, _} = Buildings.add_member(building_a.id, coralie.id, :membre_cs)
+      {:ok, _} = Buildings.add_member(building_b.id, coralie.id, :membre_cs)
+
+      conn =
+        conn
+        |> authed(coralie)
+        |> get(~p"/api/v1/residences/#{residence.id}/battles")
+
+      assert %{"data" => data} = json_response(conn, 200)
+      ids = data |> Enum.map(& &1["id"]) |> Enum.sort()
+      assert ids == Enum.sort([battle_a.id, battle_b.id])
+    end
+
+    test "filtre les bâtiments où l'user n'est PAS membre",
+         %{conn: conn} do
+      # Bâtiment B n'a pas notre user → la battle de B ne doit pas
+      # remonter, même si la résidence est la même.
+      residence = insert_residence!()
+      building_a = insert_building!(residence)
+      building_b = insert_building!(residence)
+
+      creator = insert_user!(:syndic_manager)
+      {:ok, _} = Buildings.add_member(building_a.id, creator.id, :president_cs)
+      {:ok, _} = Buildings.add_member(building_b.id, creator.id, :president_cs)
+
+      {:ok, battle_a} =
+        Battles.create_battle(building_a.id, creator.id, %{
+          "title" => "Visible",
+          "options" => [%{"label" => "X"}, %{"label" => "Y"}]
+        })
+
+      {:ok, battle_b} =
+        Battles.create_battle(building_b.id, creator.id, %{
+          "title" => "Cachée",
+          "options" => [%{"label" => "X"}, %{"label" => "Y"}]
+        })
+
+      resident = insert_user!(:coproprietaire)
+      {:ok, _} = Buildings.add_member(building_a.id, resident.id, :coproprietaire)
+
+      conn =
+        conn
+        |> authed(resident)
+        |> get(~p"/api/v1/residences/#{residence.id}/battles")
+
+      assert %{"data" => data} = json_response(conn, 200)
+      ids = Enum.map(data, & &1["id"])
+      assert battle_a.id in ids
+      refute battle_b.id in ids
+    end
+
+    test "renvoie 403 à un user qui n'est membre d'aucun bâtiment",
+         %{conn: conn} do
+      residence = insert_residence!()
+      _building = insert_building!(residence)
+      outsider = insert_user!(:coproprietaire)
+
+      conn =
+        conn
+        |> authed(outsider)
+        |> get(~p"/api/v1/residences/#{residence.id}/battles")
+
+      assert json_response(conn, 403)
+    end
+
+    test "super_admin voit tout, même sans membership", %{conn: conn} do
+      residence = insert_residence!()
+      building = insert_building!(residence)
+
+      creator = insert_user!(:syndic_manager)
+      {:ok, _} = Buildings.add_member(building.id, creator.id, :president_cs)
+
+      {:ok, battle} =
+        Battles.create_battle(building.id, creator.id, %{
+          "title" => "Audit",
+          "options" => [%{"label" => "A"}, %{"label" => "B"}]
+        })
+
+      admin = insert_user!(:super_admin)
+
+      conn =
+        conn
+        |> authed(admin)
+        |> get(~p"/api/v1/residences/#{residence.id}/battles")
+
+      assert %{"data" => [returned]} = json_response(conn, 200)
+      assert returned["id"] == battle.id
+    end
+  end
 end
