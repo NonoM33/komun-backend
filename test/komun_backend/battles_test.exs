@@ -400,4 +400,39 @@ defmodule KomunBackend.BattlesTest do
       assert tail == ["Antilope", "Bison"]
     end
   end
+
+  describe "participation_pct/2" do
+    # Bug visible sur stg (screenshot 2026-05-25) : « 200% participation »
+    # quand le vote_count dépasse le member_count (cas test super_admin
+    # qui vote en se faisant passer pour plusieurs users, ou stale data).
+    # On cap à 100 % pour ne pas afficher de pourcentage grotesque.
+    test "cap à 100 % quand vote_count > member_count", %{} do
+      residence = insert_residence!()
+      building = insert_building!(residence)
+      member = insert_user!()
+      {:ok, _} = Buildings.add_member(building.id, member.id, :coproprietaire)
+
+      # 1 membre actif, 2 votes recensés → uncapped serait 200 %.
+      assert Battles.participation_pct(building.id, 2) == 100
+      # Cas normal : 1 vote pour 1 membre → 100 %.
+      assert Battles.participation_pct(building.id, 1) == 100
+      # 0 vote → 0 %.
+      assert Battles.participation_pct(building.id, 0) == 0
+    end
+
+    test "ratio normal quand vote_count < member_count", %{} do
+      residence = insert_residence!()
+      building = insert_building!(residence)
+
+      Enum.each(1..4, fn _ ->
+        u = insert_user!()
+        {:ok, _} = Buildings.add_member(building.id, u.id, :coproprietaire)
+      end)
+
+      # 1 vote / 4 membres = 25 %
+      assert Battles.participation_pct(building.id, 1) == 25
+      # 3 votes / 4 membres = 75 %
+      assert Battles.participation_pct(building.id, 3) == 75
+    end
+  end
 end
