@@ -22,7 +22,7 @@ defmodule KomunBackend.Battles do
   alias KomunBackend.Battles.Battle
   alias KomunBackend.Votes
   alias KomunBackend.Votes.{Vote, VoteResponse}
-  alias KomunBackend.Buildings.BuildingMember
+  alias KomunBackend.Buildings.{Building, BuildingMember}
 
   @default_round_duration_days 3
   @default_max_rounds 2
@@ -39,10 +39,93 @@ defmodule KomunBackend.Battles do
     |> preload_battles()
   end
 
+  @doc """
+  Liste les battles de tous les bâtiments d'une résidence dont l'user
+  est membre actif. Sert la page `/battles` côté front : Coralie qui est
+  `membre_cs` dans Bât. A et Bât. B doit voir les battles des deux d'un
+  coup, sans avoir à switcher de bâtiment dans la sidebar (incident
+  signalé en prod le 2026-05-25 — la battle « Choix des brises vues »
+  créée sur Bât. A était invisible quand le building courant était B).
+  """
+  def list_residence_battles(residence_id, user_id) do
+    # `BuildingMember` a un index unique `(building_id, user_id)` donc le
+    # join ne duplique pas — pas besoin de `distinct`. Cela préserve un
+    # `ORDER BY inserted_at` propre.
+    from(b in Battle,
+      join: bld in Building,
+      on: bld.id == b.building_id,
+      join: m in BuildingMember,
+      on:
+        m.building_id == bld.id and m.user_id == ^user_id and
+          m.is_active == true,
+      where: bld.residence_id == ^residence_id and bld.is_active == true,
+      order_by: [desc: b.inserted_at]
+    )
+    |> Repo.all()
+    |> preload_battles()
+  end
+
+  @doc """
+  Variante super_admin : pas de filtre par membership — un super_admin
+  peut auditer toutes les battles d'une résidence même s'il n'est membre
+  d'aucun bâtiment.
+  """
+  def list_residence_battles_for_admin(residence_id) do
+    from(b in Battle,
+      join: bld in Building,
+      on: bld.id == b.building_id,
+      where: bld.residence_id == ^residence_id and bld.is_active == true,
+      order_by: [desc: b.inserted_at]
+    )
+    |> Repo.all()
+    |> preload_battles()
+  end
+
   def get_battle!(id) do
     Battle
     |> Repo.get!(id)
     |> preload_battles()
+  end
+
+  @doc """
+  Déplace une battle vers un autre bâtiment **de la même résidence**.
+  Sert au cas typique : la battle a été créée sur le mauvais bâtiment
+  par erreur (la FAB « Créer » prend le building courant du store),
+  l'admin veut juste la rebrancher sans la recréer (pas question de
+  perdre les votes déjà recueillis).
+
+  Refuse :
+    * `{:error, :different_residence}` — pas question de téléporter une
+      battle d'une copropriété à une autre, ça mélangerait des votants
+      qui n'ont rien à voir.
+    * `{:error, :building_not_found}` — building_id inconnu.
+    * `{:error, :same_building}` — no-op explicite.
+  """
+  def move_battle(battle_id, new_building_id) when is_binary(battle_id) and is_binary(new_building_id) do
+    battle = Repo.get!(Battle, battle_id)
+
+    cond do
+      battle.building_id == new_building_id ->
+        {:error, :same_building}
+
+      true ->
+        with %Building{residence_id: src_residence} <-
+               Repo.get(Building, battle.building_id) || :building_not_found,
+             %Building{residence_id: dst_residence} <-
+               Repo.get(Building, new_building_id) || :building_not_found,
+             true <- src_residence == dst_residence || :different_residence,
+             {:ok, _} <-
+               battle
+               |> Battle.move_changeset(%{building_id: new_building_id})
+               |> Repo.update() do
+          {:ok, get_battle!(battle.id)}
+        else
+          :building_not_found -> {:error, :building_not_found}
+          :different_residence -> {:error, :different_residence}
+          {:error, %Ecto.Changeset{} = cs} -> {:error, cs}
+          other -> {:error, other}
+        end
+    end
   end
 
   @doc """

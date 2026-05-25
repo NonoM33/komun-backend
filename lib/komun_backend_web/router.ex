@@ -256,9 +256,16 @@ defmodule KomunBackendWeb.Router do
     get    "/buildings/:building_id/battles",            BattleController, :index
     post   "/buildings/:building_id/battles",            BattleController, :create
     get    "/buildings/:building_id/battles/:id",        BattleController, :show
+    patch  "/buildings/:building_id/battles/:id",        BattleController, :update
+    put    "/buildings/:building_id/battles/:id",        BattleController, :update
     delete "/buildings/:building_id/battles/:id",        BattleController, :delete
     post   "/buildings/:building_id/battles/:id/vote",   BattleController, :cast_vote
     post   "/buildings/:building_id/battles/:id/advance", BattleController, :advance
+
+    # Battles agrégées à l'échelle d'une résidence — la page `/battles`
+    # côté front est résidence-scope, pour qu'un membre CS de plusieurs
+    # bâtiments voie en un seul coup les tournois de toute la copro.
+    get    "/residences/:residence_id/battles",          BattleController, :residence_index
 
     # Projects (copro devis workflow) — groups devis by project, then starts
     # a vote on the chosen devis.
