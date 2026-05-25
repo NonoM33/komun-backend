@@ -256,6 +256,8 @@ defmodule KomunBackendWeb.Router do
     get    "/buildings/:building_id/battles",            BattleController, :index
     post   "/buildings/:building_id/battles",            BattleController, :create
     get    "/buildings/:building_id/battles/:id",        BattleController, :show
+    patch  "/buildings/:building_id/battles/:id",        BattleController, :update
+    put    "/buildings/:building_id/battles/:id",        BattleController, :update
     delete "/buildings/:building_id/battles/:id",        BattleController, :delete
     post   "/buildings/:building_id/battles/:id/vote",   BattleController, :cast_vote
     post   "/buildings/:building_id/battles/:id/advance", BattleController, :advance

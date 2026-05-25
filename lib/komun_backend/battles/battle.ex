@@ -69,4 +69,20 @@ defmodule KomunBackend.Battles.Battle do
     |> cast(attrs, [:title, :description, :status, :winning_option_label, :current_round])
     |> validate_length(:title, min: 3, max: 200)
   end
+
+  @doc """
+  Changeset dédié au déplacement d'une battle entre bâtiments de la
+  même résidence. N'accepte QUE `:building_id` — pas question qu'un
+  PATCH innocent fasse glisser au passage le `current_round` ou le
+  `status` et casse l'état d'avancement du tournoi. La validation que
+  le nouveau bâtiment est bien dans la même résidence est faite au
+  niveau du contexte (`Battles.move_battle/2`), pas ici, parce qu'on
+  a besoin de comparer les deux résidences via Repo.
+  """
+  def move_changeset(battle, attrs) do
+    battle
+    |> cast(attrs, [:building_id])
+    |> validate_required([:building_id])
+    |> foreign_key_constraint(:building_id)
+  end
 end

@@ -96,6 +96,82 @@ defmodule KomunBackendWeb.BattleController do
     end
   end
 
+  # PATCH /api/v1/buildings/:building_id/battles/:id
+  #
+  # Pour la V1, le seul champ « modifiable » d'une battle existante
+  # est le bâtiment cible (`building_id`) — l'admin a créé la battle
+  # sur le mauvais bâtiment par erreur (la FAB « Créer » s'aligne sur
+  # le building courant du store) et veut la rebrancher sans détruire
+  # les votes déjà recueillis. Le déplacement est gated CS + syndic ;
+  # le nouveau bâtiment doit appartenir à la même résidence (vérifié
+  # dans `Battles.move_battle/2`).
+  def update(conn, %{"building_id" => building_id, "id" => id} = params) do
+    user = Guardian.Plug.current_resource(conn)
+
+    cond do
+      # cf. authorize_building/2 — `Buildings.member?` + super_admin
+      not (user.role == :super_admin or Buildings.member?(building_id, user.id)) ->
+        conn |> put_status(:forbidden) |> json(%{error: "Forbidden"}) |> halt()
+
+      # Move = action privilégiée (CS + syndic + super_admin) — pas
+      # question qu'un copropriétaire lambda téléporte la battle du
+      # voisin. NB : `require_privileged/1` renvoie `:unauthorized`
+      # mais le `with` du reste du module ne le gère pas (bug latent
+      # documenté dans le test) ; on inline le check ici.
+      user.role not in @privileged_roles ->
+        conn |> put_status(:forbidden) |> json(%{error: "Forbidden"}) |> halt()
+
+      true ->
+        battle = Battles.get_battle!(id)
+
+        cond do
+          battle.building_id != building_id ->
+            conn |> put_status(:not_found) |> json(%{error: "Not found"}) |> halt()
+
+          true ->
+            attrs = Map.get(params, "battle", params)
+            new_building_id = Map.get(attrs, "building_id")
+
+            cond do
+              is_nil(new_building_id) or new_building_id == "" ->
+                conn
+                |> put_status(:unprocessable_entity)
+                |> json(%{error: "building_id requis"})
+
+              true ->
+                case Battles.move_battle(id, new_building_id) do
+                  {:ok, moved} ->
+                    json(conn, %{data: battle_json(moved, user.id)})
+
+                  {:error, :same_building} ->
+                    json(conn, %{data: battle_json(battle, user.id)})
+
+                  {:error, :different_residence} ->
+                    conn
+                    |> put_status(:unprocessable_entity)
+                    |> json(%{
+                      error:
+                        "Une battle ne peut être déplacée qu'entre bâtiments d'une même résidence"
+                    })
+
+                  {:error, :building_not_found} ->
+                    conn |> put_status(:not_found) |> json(%{error: "Bâtiment introuvable"})
+
+                  {:error, %Ecto.Changeset{} = cs} ->
+                    conn
+                    |> put_status(:unprocessable_entity)
+                    |> json(%{errors: format_errors(cs)})
+
+                  {:error, reason} ->
+                    conn
+                    |> put_status(:unprocessable_entity)
+                    |> json(%{error: inspect(reason)})
+                end
+            end
+        end
+    end
+  end
+
   # POST /api/v1/buildings/:building_id/battles/:id/vote
   # Body : { option_id: "uuid" } — vote pour l'option du round courant.
   def cast_vote(conn, %{"building_id" => building_id, "id" => id, "option_id" => option_id}) do
