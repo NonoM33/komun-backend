@@ -125,9 +125,12 @@ defmodule KomunBackendWeb.Router do
 
     # Dossiers rattachés à la résidence entière (visible à tous les
     # bâtiments). Voir `ResidenceCaseController` pour l'authz.
-    post "/residences/:residence_id/incidents",  ResidenceCaseController, :create_incident
-    post "/residences/:residence_id/doleances",  ResidenceCaseController, :create_doleance
-    post "/residences/:residence_id/diligences", ResidenceCaseController, :create_diligence
+    post   "/residences/:residence_id/incidents",     ResidenceCaseController, :create_incident
+    post   "/residences/:residence_id/doleances",     ResidenceCaseController, :create_doleance
+    post   "/residences/:residence_id/diligences",    ResidenceCaseController, :create_diligence
+    put    "/residences/:residence_id/doleances/:id", ResidenceCaseController, :update_doleance
+    patch  "/residences/:residence_id/doleances/:id", ResidenceCaseController, :update_doleance
+    delete "/residences/:residence_id/doleances/:id", ResidenceCaseController, :delete_doleance
 
     # Comparaison admin de modèles AI pour l'ingestion email.
     # Réservé super_admin (gating dans le controller).
