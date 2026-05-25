@@ -811,4 +811,111 @@ defmodule KomunBackendWeb.BattleControllerTest do
       assert reloaded.winning_option_label == nil
     end
   end
+
+  describe "annulation de vote (option_id null / option_ids [])" do
+    # Feedback voisin (2026-05-25) : « une personne doit pouvoir
+    # annuler son vote ». Le backend supporte déjà la sémantique :
+    #   * single_choice : option_id=null → DELETE de la response.
+    #   * multi_choice  : option_ids=[]  → delete_all des responses.
+    # Ces tests verrouillent ce comportement pour éviter qu'une
+    # régression future (genre validate_required sur option_id)
+    # ne casse silencieusement l'UI « Annuler mon vote ».
+
+    test "single_choice : option_id=null efface la response existante",
+         %{conn: conn} do
+      {building, _admin} = setup_with_privileged()
+      voter = insert_user!(:coproprietaire)
+      {:ok, _} = Buildings.add_member(building.id, voter.id, :coproprietaire)
+
+      {:ok, battle} =
+        Battles.create_battle(building.id, voter.id, %{
+          "title" => "Single",
+          "options" => [%{"label" => "A"}, %{"label" => "B"}]
+        })
+
+      [opt_a, _] = Enum.sort_by(hd(battle.votes).options, & &1.position)
+
+      # Vote initial
+      conn
+      |> authed(voter)
+      |> post(~p"/api/v1/buildings/#{building.id}/battles/#{battle.id}/vote",
+        %{"option_id" => opt_a.id}
+      )
+
+      # Annulation explicite via option_id=null
+      conn2 =
+        build_conn()
+        |> authed(voter)
+        |> post(~p"/api/v1/buildings/#{building.id}/battles/#{battle.id}/vote",
+          %{"option_id" => nil}
+        )
+
+      assert %{"data" => data} = json_response(conn2, 200)
+      [round] = data["rounds"]
+      assert round["own_option_id"] == nil
+      assert round["own_option_ids"] == []
+      assert round["total_votes"] == 0
+    end
+
+    test "single_choice : annuler quand l'user n'a pas encore voté = no-op (pas d'erreur)",
+         %{conn: conn} do
+      {building, _admin} = setup_with_privileged()
+      voter = insert_user!(:coproprietaire)
+      {:ok, _} = Buildings.add_member(building.id, voter.id, :coproprietaire)
+
+      {:ok, battle} =
+        Battles.create_battle(building.id, voter.id, %{
+          "title" => "Single",
+          "options" => [%{"label" => "A"}, %{"label" => "B"}]
+        })
+
+      conn =
+        conn
+        |> authed(voter)
+        |> post(~p"/api/v1/buildings/#{building.id}/battles/#{battle.id}/vote",
+          %{"option_id" => nil}
+        )
+
+      assert %{"data" => data} = json_response(conn, 200)
+      [round] = data["rounds"]
+      assert round["own_option_ids"] == []
+    end
+
+    test "multi_choice : option_ids=[] efface tous les votes existants du user",
+         %{conn: conn} do
+      # Couvert dans le describe multi-choice plus haut, mais répété
+      # ici sous l'angle « annulation explicite » pour que la table
+      # des matières des tests reflète directement la feature voisin.
+      {building, _admin} = setup_with_privileged()
+      voter = insert_user!(:coproprietaire)
+      {:ok, _} = Buildings.add_member(building.id, voter.id, :coproprietaire)
+
+      {:ok, battle} =
+        Battles.create_battle(building.id, voter.id, %{
+          "title" => "Multi annulable",
+          "vote_mode" => "multiple_choice",
+          "options" => [%{"label" => "X"}, %{"label" => "Y"}, %{"label" => "Z"}]
+        })
+
+      [ox, oy, _] = Enum.sort_by(hd(battle.votes).options, & &1.position)
+
+      conn
+      |> authed(voter)
+      |> post(~p"/api/v1/buildings/#{building.id}/battles/#{battle.id}/vote",
+        %{"option_ids" => [ox.id, oy.id]}
+      )
+
+      conn2 =
+        build_conn()
+        |> authed(voter)
+        |> post(~p"/api/v1/buildings/#{building.id}/battles/#{battle.id}/vote",
+          %{"option_ids" => []}
+        )
+
+      assert %{"data" => data} = json_response(conn2, 200)
+      [round] = data["rounds"]
+      assert round["own_option_ids"] == []
+      assert round["total_votes"] == 0
+    end
+  end
 end
