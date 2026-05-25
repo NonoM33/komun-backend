@@ -200,10 +200,60 @@ defmodule KomunBackendWeb.BattleControllerTest do
       assert err =~ "au moins 2"
     end
 
-    # NOTE : pas de test "403 à un copropriétaire" ici — le contrôleur a
-    # un bug latent (`require_privileged/1` renvoie `{:error, :unauthorized}`
-    # qui n'est pas géré par le `with` et fait crasher l'action au lieu
-    # de renvoyer un 403). Sujet orthogonal au bug multipart corrigé ici.
+    # Hotfix 2026-05-25 : non-régression sur le gating CS/syndic.
+    # Avant, le `with :ok <- require_privileged(user)` faisait
+    # fall-through → 500 silencieux pour un copro lambda. La battle
+    # n'était pas créée (donc pas de faille de sécurité), mais l'UX
+    # était trompeuse — l'utilisateur croyait à un bug serveur. On a
+    # déplacé le check en `cond` inline qui halte avec 403 propre.
+    test "403 propre pour un copropriétaire lambda (pas de battle créée en DB)",
+         %{conn: conn} do
+      residence = insert_residence!()
+      building = insert_building!(residence)
+      voisin = insert_user!(:coproprietaire)
+      {:ok, _} = Buildings.add_member(building.id, voisin.id, :coproprietaire)
+
+      conn =
+        conn
+        |> authed(voisin)
+        |> post(~p"/api/v1/buildings/#{building.id}/battles", %{
+          "battle" => %{
+            "title" => "Tentative copro",
+            "options" => [%{"label" => "A"}, %{"label" => "B"}]
+          }
+        })
+
+      assert %{"error" => err} = json_response(conn, 403)
+      assert err =~ "conseil syndical"
+
+      # Garantie de non-création — pas de battle insérée en DB malgré
+      # la tentative.
+      assert Repo.aggregate(
+               from(b in Battle, where: b.building_id == ^building.id),
+               :count
+             ) == 0
+    end
+
+    test "403 propre sur /advance pour un copropriétaire lambda",
+         %{conn: conn} do
+      {building, admin} = setup_with_privileged()
+
+      {:ok, battle} =
+        Battles.create_battle(building.id, admin.id, %{
+          "title" => "Pour test advance",
+          "options" => [%{"label" => "A"}, %{"label" => "B"}]
+        })
+
+      voisin = insert_user!(:coproprietaire)
+      {:ok, _} = Buildings.add_member(building.id, voisin.id, :coproprietaire)
+
+      conn =
+        conn
+        |> authed(voisin)
+        |> post(~p"/api/v1/buildings/#{building.id}/battles/#{battle.id}/advance", %{})
+
+      assert json_response(conn, 403)
+    end
   end
 
   describe "DELETE /api/v1/buildings/:bid/battles/:id" do
