@@ -14,7 +14,9 @@ defmodule KomunBackendWeb.ShareControllerTest do
 
   use KomunBackendWeb.ConnCase, async: false
 
-  alias KomunBackend.{Battles, Buildings, Repo, Residences}
+  import Ecto.Query
+
+  alias KomunBackend.{Articles, Battles, Buildings, Projects, Repo, Residences}
   alias KomunBackend.Accounts.User
   alias KomunBackend.Buildings.Building
   alias KomunBackend.Residences.Residence
@@ -111,6 +113,30 @@ defmodule KomunBackendWeb.ShareControllerTest do
       assert response =~ "og:title"
     end
 
+    test "battle :cancelled → fallback générique (état mort, on n'affiche pas la battle)",
+         %{conn: conn} do
+      residence = insert_residence!()
+      building = insert_building!(residence)
+      creator = insert_user!(:syndic_manager)
+      {:ok, _} = Buildings.add_member(building.id, creator.id, :president_cs)
+
+      {:ok, battle} =
+        Battles.create_battle(building.id, creator.id, %{
+          "title" => "Annulée",
+          "options" => [%{"label" => "A"}, %{"label" => "B"}]
+        })
+
+      Repo.update_all(
+        from(b in KomunBackend.Battles.Battle, where: b.id == ^battle.id),
+        set: [status: :cancelled]
+      )
+
+      conn = get(conn, ~p"/share/battles/#{battle.id}")
+      assert response = response(conn, 200)
+      refute response =~ "Annulée"
+      assert response =~ "Komun"
+    end
+
     test "battle sans photo d'option → og:image = cover Komun par défaut",
          %{conn: conn} do
       residence = insert_residence!()
@@ -133,6 +159,86 @@ defmodule KomunBackendWeb.ShareControllerTest do
       assert response =~ "Couleur peinture cage"
       # Image = default Komun
       assert response =~ "og-default.png"
+    end
+  end
+
+  describe "GET /share/articles/:id" do
+    test "article publié → og:title + excerpt + cover", %{conn: conn} do
+      residence = insert_residence!()
+      building = insert_building!(residence)
+      author = insert_user!(:membre_cs)
+      {:ok, _} = Buildings.add_member(building.id, author.id, :membre_cs)
+
+      {:ok, article} =
+        Articles.create_article(building.id, author.id, %{
+          title: "Travaux du hall — Avant-projet",
+          excerpt: "Tour d'horizon des 3 propositions reçues du chantier.",
+          content: "Long content markdown ici.",
+          cover_url: "https://komun.app/uploads/articles/cover-hall.jpg"
+        })
+
+      {:ok, _published} = Articles.transition(article, :published)
+
+      conn = get(conn, ~p"/share/articles/#{article.id}")
+
+      assert response = response(conn, 200)
+      assert response =~ "Travaux du hall"
+      assert response =~ "Tour d&#39;horizon des 3 propositions"
+      assert response =~ "cover-hall.jpg"
+    end
+
+    test "article :draft → fallback générique (pas encore publié)",
+         %{conn: conn} do
+      residence = insert_residence!()
+      building = insert_building!(residence)
+      author = insert_user!(:membre_cs)
+      {:ok, _} = Buildings.add_member(building.id, author.id, :membre_cs)
+
+      {:ok, article} =
+        Articles.create_article(building.id, author.id, %{
+          title: "Brouillon secret",
+          excerpt: "Confidentiel"
+        })
+
+      conn = get(conn, ~p"/share/articles/#{article.id}")
+      assert response = response(conn, 200)
+      refute response =~ "Brouillon secret"
+      refute response =~ "Confidentiel"
+      assert response =~ "Komun"
+    end
+  end
+
+  describe "GET /share/projects/:id" do
+    test "projet existant → og:title + statut", %{conn: conn} do
+      residence = insert_residence!()
+      building = insert_building!(residence)
+      creator = insert_user!(:syndic_manager)
+      {:ok, _} = Buildings.add_member(building.id, creator.id, :president_cs)
+
+      {:ok, project} =
+        Projects.create_project(building.id, creator.id, %{
+          title: "Réfection toiture",
+          description: "3 devis en cours d'analyse pour la réfection complète."
+        })
+
+      conn = get(conn, ~p"/share/projects/#{project.id}")
+
+      assert response = response(conn, 200)
+      assert response =~ "Réfection toiture"
+      assert response =~ "Collecte de devis"
+    end
+  end
+
+  describe "GET /share/diligences/:id" do
+    test "diligence (CS-only) → toujours preview générique, JAMAIS le titre",
+         %{conn: conn} do
+      # Diligences sont CS-only par construction. On NE doit JAMAIS
+      # afficher leur titre dans iMessage — risque de divulgation
+      # (« trouble voisinage 3e étage M. Dupont »).
+      conn = get(conn, ~p"/share/diligences/abc-123-not-real-id")
+      assert response = response(conn, 200)
+      assert response =~ "Komun"
+      assert response =~ "copropri"
     end
   end
 end

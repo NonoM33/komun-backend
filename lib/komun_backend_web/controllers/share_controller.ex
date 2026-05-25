@@ -4,10 +4,13 @@ defmodule KomunBackendWeb.ShareController do
   WhatsApp, Slack, Discord, Telegram, LinkedIn…). Une seule URL canonique
   par type de ressource :
 
-      GET /share/events/:id     → titre + description + photo de l'event
-      GET /share/incidents/:id  → titre + description + 1ère photo
-      GET /share/doleances/:id  → titre + description + 1ère photo
-      GET /share/battles/:id    → titre + round/options + photo 1ère option
+      GET /share/events/:id      → titre + description + photo de l'event
+      GET /share/incidents/:id   → titre + description + 1ère photo
+      GET /share/doleances/:id   → titre + description + 1ère photo
+      GET /share/battles/:id     → titre + round/options + photo 1ère option
+      GET /share/articles/:id    → titre + excerpt + cover éditoriale
+      GET /share/projects/:id    → titre + description + status devis
+      GET /share/diligences/:id  → preview générique (CS-only confidentiel)
 
   Pas d'authentification : un lien partagé est public par construction.
   Si la ressource est confidentielle (incident `:council_only`,
@@ -18,6 +21,10 @@ defmodule KomunBackendWeb.ShareController do
 
   use KomunBackendWeb, :controller
 
+  import Ecto.Query
+
+  alias KomunBackend.Articles
+  alias KomunBackend.Articles.Article
   alias KomunBackend.Battles
   alias KomunBackend.Battles.Battle
   alias KomunBackend.Doleances
@@ -26,6 +33,8 @@ defmodule KomunBackendWeb.ShareController do
   alias KomunBackend.Events.Event
   alias KomunBackend.Incidents
   alias KomunBackend.Incidents.Incident
+  alias KomunBackend.Projects.Project
+  alias KomunBackend.Repo
 
   @default_image "https://komun.app/og-default.png"
 
@@ -45,6 +54,12 @@ defmodule KomunBackendWeb.ShareController do
   defp build_payload("incidents", id), do: build_incident_payload(id)
   defp build_payload("doleances", id), do: build_doleance_payload(id)
   defp build_payload("battles", id), do: build_battle_payload(id)
+  defp build_payload("articles", id), do: build_article_payload(id)
+  defp build_payload("projects", id), do: build_project_payload(id)
+  # Diligences est CS-only par construction : on retombe sur la preview
+  # générique sans aucune donnée du dossier — pas question d'exposer un
+  # nom de famille ou une description d'incident voisinage dans iMessage.
+  defp build_payload("diligences", _id), do: generic()
   defp build_payload(_, _), do: generic()
 
   defp build_event_payload(event_id) do
@@ -104,6 +119,60 @@ defmodule KomunBackendWeb.ShareController do
           spa_url("incidents", inc.id)
         }
     end
+  end
+
+  defp build_article_payload(article_id) do
+    case safe_get_article(article_id) do
+      nil ->
+        generic()
+
+      # Brouillon ou en relecture : pas publié donc pas dans la preview
+      # publique. On ne révèle ni titre ni excerpt.
+      %Article{status: status} when status in [:draft, :reviewing] ->
+        generic()
+
+      %Article{status: :archived} ->
+        generic()
+
+      %Article{} = a ->
+        {
+          a.title,
+          format_article_description(a),
+          cover_or_default(a.cover_url),
+          spa_url("articles", a.id)
+        }
+    end
+  end
+
+  defp safe_get_article(id) do
+    Articles.get_article!(id)
+  rescue
+    _ -> nil
+  end
+
+  defp build_project_payload(project_id) do
+    # `Projects.get_project/2` exige un building_id mais l'URL `/projects/:id`
+    # n'en a pas. On query directement le Repo — c'est sûr parce que ce
+    # contrôleur est public et lit uniquement les champs déjà partagés
+    # côté SPA.
+    case safe_get_project(project_id) do
+      nil ->
+        generic()
+
+      %Project{} = p ->
+        {
+          p.title,
+          format_project_description(p),
+          @default_image,
+          spa_url("projects", p.id)
+        }
+    end
+  end
+
+  defp safe_get_project(id) do
+    Repo.one(from(p in Project, where: p.id == ^id))
+  rescue
+    _ -> nil
   end
 
   defp build_battle_payload(battle_id) do
@@ -189,6 +258,33 @@ defmodule KomunBackendWeb.ShareController do
   defp format_doleance_description(%Doleance{} = d) do
     base = d.description || "Une réclamation collective déposée sur Komun."
     "#{base}" |> String.slice(0, 280)
+  end
+
+  defp format_article_description(%Article{} = a) do
+    # Excerpt prime sur le content (excerpt est déjà conçu pour résumer).
+    # Si pas d'excerpt, on tronque le content brut (le content peut être
+    # markdown ou HTML — on laisse passer, les scrapers OG strippent).
+    base = a.excerpt || a.content || "Un article publié sur Komun."
+    String.slice(base, 0, 280)
+  end
+
+  defp format_project_description(%Project{} = p) do
+    status =
+      case p.status do
+        :collecting -> "📥 Collecte de devis"
+        :voting -> "🗳️ Vote en cours"
+        :decided -> "✅ Décision prise"
+        :completed -> "🏁 Travaux terminés"
+        :cancelled -> "❌ Annulé"
+        _ -> nil
+      end
+
+    base = p.description || "Un projet de copropriété en cours sur Komun."
+
+    case status do
+      nil -> String.slice(base, 0, 280)
+      s -> "#{s}\n\n#{base}" |> String.slice(0, 280)
+    end
   end
 
   defp format_battle_description(%Battle{} = b) do
