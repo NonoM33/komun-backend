@@ -193,6 +193,22 @@ defmodule KomunBackend.Battles do
 
   Plante si `options` < 2 — sans ça il n'y a pas de bataille.
   """
+  # Label canonique de l'option « Aucune des propositions ». Injectée
+  # automatiquement dans chaque round quand `battle.allow_none == true`.
+  # On reconnaît cette option de deux façons côté lecture :
+  #   * `position == @none_option_position` (sentinelle), ou
+  #   * label exact == @none_option_label (fallback rétrocompat si la
+  #     position évolue un jour).
+  @none_option_label "Aucune des propositions"
+  @none_option_position 9999
+
+  def none_option_label, do: @none_option_label
+  def none_option_position, do: @none_option_position
+
+  def none_option?(%{position: pos}) when pos == @none_option_position, do: true
+  def none_option?(%{label: @none_option_label}), do: true
+  def none_option?(_), do: false
+
   def create_battle(building_id, user_id, attrs) do
     attrs = normalize_attrs(attrs)
 
@@ -211,7 +227,9 @@ defmodule KomunBackend.Battles do
               "description",
               "round_duration_days",
               "max_rounds",
-              "quorum_pct"
+              "quorum_pct",
+              "vote_mode",
+              "allow_none"
             ])
             |> Map.merge(%{
               "building_id" => building_id,
@@ -224,7 +242,8 @@ defmodule KomunBackend.Battles do
 
           with {:ok, battle} <-
                  %Battle{} |> Battle.create_changeset(battle_attrs) |> Repo.insert(),
-               {:ok, _vote} <- open_round(battle, 1, options, user_id) do
+               final_options = maybe_inject_none_option(battle, options),
+               {:ok, _vote} <- open_round(battle, 1, final_options, user_id) do
             get_battle!(battle.id)
           else
             {:error, reason} -> Repo.rollback(reason)
@@ -232,6 +251,22 @@ defmodule KomunBackend.Battles do
         end)
     end
   end
+
+  # Quand `battle.allow_none == true`, on ajoute une option « Aucune
+  # des propositions » à la fin de la liste — c'est UNE option comme
+  # les autres dans le tally, mais marquée par sa position sentinelle
+  # (9999) pour que la UI puisse l'afficher distinctement.
+  defp maybe_inject_none_option(%Battle{allow_none: true}, options) do
+    options ++
+      [
+        %{
+          "label" => @none_option_label,
+          "position" => @none_option_position
+        }
+      ]
+  end
+
+  defp maybe_inject_none_option(_, options), do: options
 
   # Crée le Vote du round courant avec ses options, schedule l'Oban job
   # qui fera avancer la battle à expiration.
@@ -245,9 +280,15 @@ defmodule KomunBackend.Battles do
       option_specs
       |> Enum.with_index()
       |> Enum.map(fn {opt, idx} ->
+        # On respecte une position explicite (cas « Aucune des
+        # propositions » avec sa sentinelle 9999), sinon on retombe
+        # sur l'ordre d'arrivée. Évite que `Enum.with_index` écrase
+        # le marqueur qui sert à reconnaître l'option built-in.
+        explicit_position = Map.get(opt, "position") || Map.get(opt, :position)
+
         %{
           "label" => Map.get(opt, "label") || Map.get(opt, :label),
-          "position" => idx,
+          "position" => explicit_position || idx,
           "attachment_url" => Map.get(opt, "attachment_url") || Map.get(opt, :attachment_url),
           "attachment_filename" =>
             Map.get(opt, "attachment_filename") || Map.get(opt, :attachment_filename),
@@ -294,11 +335,19 @@ defmodule KomunBackend.Battles do
   end
 
   @doc """
-  Vote pour une option du round courant. Renvoie `{:error, :no_open_round}`
-  si la battle est terminée ou si aucun round ouvert (cas théorique :
-  l'AdvanceJob n'a pas encore tourné).
+  Vote pour une ou plusieurs options du round courant. Wrapper unifié :
+
+    * `single_choice` (legacy) : `cast_vote(battle_id, user_id, option_id)`
+      garde le contrat original — on insère/met-à-jour la réponse unique.
+    * `multiple_choice` : `cast_vote(battle_id, user_id, option_ids)` où
+      `option_ids` est une `[binary]`. On REMPLACE atomiquement le set
+      de réponses du user pour ce round. Liste vide = pas de vote =
+      abstention (cohérent avec « tu peux ne pas voter »).
+
+  Renvoie `{:error, :no_open_round}` si la battle est terminée ou si
+  aucun round ouvert.
   """
-  def cast_vote(battle_id, user_id, option_id) do
+  def cast_vote(battle_id, user_id, option_id_or_ids) do
     battle = get_battle!(battle_id)
 
     case current_vote(battle) do
@@ -309,22 +358,106 @@ defmodule KomunBackend.Battles do
         {:error, :round_closed}
 
       %Vote{} = vote ->
-        # On délègue au contexte Votes pour garder la logique de réponse
-        # unifiée (insert_or_update + unique constraint).
-        case Repo.get_by(VoteResponse, vote_id: vote.id, user_id: user_id) do
-          nil ->
-            %VoteResponse{}
-            |> VoteResponse.changeset(%{
-              vote_id: vote.id,
-              user_id: user_id,
-              option_id: option_id
-            })
-            |> Repo.insert()
+        cond do
+          battle.vote_mode == :multiple_choice ->
+            cast_multi_vote(vote, user_id, normalize_option_ids(option_id_or_ids))
 
-          existing ->
-            existing
-            |> VoteResponse.changeset(%{option_id: option_id})
-            |> Repo.update()
+          # Single choice : on accepte aussi un array à 0/1 élément pour
+          # qu'un client multi-savvy puisse appeler le même endpoint.
+          is_list(option_id_or_ids) ->
+            case normalize_option_ids(option_id_or_ids) do
+              [] -> cast_single_vote(vote, user_id, nil)
+              [one] -> cast_single_vote(vote, user_id, one)
+              _ -> {:error, :single_choice_expects_one_option}
+            end
+
+          true ->
+            cast_single_vote(vote, user_id, option_id_or_ids)
+        end
+    end
+  end
+
+  defp normalize_option_ids(nil), do: []
+  defp normalize_option_ids(id) when is_binary(id), do: [id]
+  defp normalize_option_ids(ids) when is_list(ids), do: Enum.uniq(Enum.reject(ids, &is_nil/1))
+  defp normalize_option_ids(_), do: []
+
+  # Comportement historique pour `single_choice` — un upsert sur (vote, user).
+  defp cast_single_vote(%Vote{} = vote, user_id, option_id) do
+    case Repo.get_by(VoteResponse, vote_id: vote.id, user_id: user_id) do
+      nil ->
+        if is_nil(option_id) do
+          # Pas de réponse existante + pas d'option → no-op explicite.
+          {:ok, :noop}
+        else
+          %VoteResponse{}
+          |> VoteResponse.changeset(%{
+            vote_id: vote.id,
+            user_id: user_id,
+            option_id: option_id
+          })
+          |> Repo.insert()
+        end
+
+      existing ->
+        if is_nil(option_id) do
+          Repo.delete(existing)
+        else
+          existing
+          |> VoteResponse.changeset(%{option_id: option_id})
+          |> Repo.update()
+        end
+    end
+  end
+
+  # Multi-choice : on REMPLACE le set de réponses du user. Atomique
+  # via transaction — pas de fenêtre où le user a moitié-voté.
+  # Les ids invalides (pas dans les options du vote courant) sont
+  # silencieusement ignorés côté DB via la FK ; on filtre côté
+  # application pour rendre l'erreur lisible.
+  defp cast_multi_vote(%Vote{} = vote, user_id, option_ids) when is_list(option_ids) do
+    valid_ids = MapSet.new(Enum.map(vote.options || [], & &1.id))
+
+    {kept, rejected} = Enum.split_with(option_ids, &MapSet.member?(valid_ids, &1))
+
+    cond do
+      rejected != [] ->
+        {:error, {:invalid_option_ids, rejected}}
+
+      true ->
+        Repo.transaction(fn ->
+          from(r in VoteResponse,
+            where: r.vote_id == ^vote.id and r.user_id == ^user_id
+          )
+          |> Repo.delete_all()
+
+          inserted_at = DateTime.utc_now() |> DateTime.truncate(:second)
+
+          rows =
+            Enum.map(kept, fn opt_id ->
+              %{
+                id: Ecto.UUID.generate(),
+                vote_id: vote.id,
+                user_id: user_id,
+                option_id: opt_id,
+                inserted_at: inserted_at,
+                updated_at: inserted_at
+              }
+            end)
+
+          case rows do
+            [] ->
+              # Abstention explicite — pas d'insert, juste delete au-dessus.
+              :ok
+
+            _ ->
+              {_count, _} = Repo.insert_all(VoteResponse, rows)
+              :ok
+          end
+        end)
+        |> case do
+          {:ok, _} -> {:ok, length(kept)}
+          {:error, _} = err -> err
         end
     end
   end
@@ -409,6 +542,7 @@ defmodule KomunBackend.Battles do
         %{
           option_id: opt.id,
           label: opt.label,
+          position: opt.position,
           votes: Map.get(counts, opt.id, 0),
           attachment_url: opt.attachment_url,
           attachment_filename: opt.attachment_filename,
@@ -462,6 +596,11 @@ defmodule KomunBackend.Battles do
           Enum.map(qualifiers, fn q ->
             %{
               "label" => q.label,
+              # Préserve la position sentinelle (9999) pour que l'option
+              # « Aucune des propositions » reste reconnaissable au
+              # round suivant. Sinon `open_round` la renumérote 0..N et
+              # l'UI la confond avec une option de proposition normale.
+              "position" => q[:position],
               "attachment_url" => q[:attachment_url],
               "attachment_filename" => q[:attachment_filename],
               "attachment_mime_type" => q[:attachment_mime_type],

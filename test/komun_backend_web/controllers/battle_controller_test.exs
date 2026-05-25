@@ -200,10 +200,60 @@ defmodule KomunBackendWeb.BattleControllerTest do
       assert err =~ "au moins 2"
     end
 
-    # NOTE : pas de test "403 à un copropriétaire" ici — le contrôleur a
-    # un bug latent (`require_privileged/1` renvoie `{:error, :unauthorized}`
-    # qui n'est pas géré par le `with` et fait crasher l'action au lieu
-    # de renvoyer un 403). Sujet orthogonal au bug multipart corrigé ici.
+    # Hotfix 2026-05-25 : non-régression sur le gating CS/syndic.
+    # Avant, le `with :ok <- require_privileged(user)` faisait
+    # fall-through → 500 silencieux pour un copro lambda. La battle
+    # n'était pas créée (donc pas de faille de sécurité), mais l'UX
+    # était trompeuse — l'utilisateur croyait à un bug serveur. On a
+    # déplacé le check en `cond` inline qui halte avec 403 propre.
+    test "403 propre pour un copropriétaire lambda (pas de battle créée en DB)",
+         %{conn: conn} do
+      residence = insert_residence!()
+      building = insert_building!(residence)
+      voisin = insert_user!(:coproprietaire)
+      {:ok, _} = Buildings.add_member(building.id, voisin.id, :coproprietaire)
+
+      conn =
+        conn
+        |> authed(voisin)
+        |> post(~p"/api/v1/buildings/#{building.id}/battles", %{
+          "battle" => %{
+            "title" => "Tentative copro",
+            "options" => [%{"label" => "A"}, %{"label" => "B"}]
+          }
+        })
+
+      assert %{"error" => err} = json_response(conn, 403)
+      assert err =~ "conseil syndical"
+
+      # Garantie de non-création — pas de battle insérée en DB malgré
+      # la tentative.
+      assert Repo.aggregate(
+               from(b in Battle, where: b.building_id == ^building.id),
+               :count
+             ) == 0
+    end
+
+    test "403 propre sur /advance pour un copropriétaire lambda",
+         %{conn: conn} do
+      {building, admin} = setup_with_privileged()
+
+      {:ok, battle} =
+        Battles.create_battle(building.id, admin.id, %{
+          "title" => "Pour test advance",
+          "options" => [%{"label" => "A"}, %{"label" => "B"}]
+        })
+
+      voisin = insert_user!(:coproprietaire)
+      {:ok, _} = Buildings.add_member(building.id, voisin.id, :coproprietaire)
+
+      conn =
+        conn
+        |> authed(voisin)
+        |> post(~p"/api/v1/buildings/#{building.id}/battles/#{battle.id}/advance", %{})
+
+      assert json_response(conn, 403)
+    end
   end
 
   describe "DELETE /api/v1/buildings/:bid/battles/:id" do
@@ -410,6 +460,214 @@ defmodule KomunBackendWeb.BattleControllerTest do
 
       assert %{"data" => [returned]} = json_response(conn, 200)
       assert returned["id"] == battle.id
+    end
+  end
+
+  describe "multi-choice voting (battle.vote_mode = :multiple_choice)" do
+    # Feedback voisin du 2026-05-25 : « Pourquoi pas un vote à choix
+    # multiples ? Plusieurs options peuvent convenir à quelqu'un. »
+    # On valide que (a) un user peut cocher N options, (b) ses
+    # responses sont remplacées en bloc à chaque cast, (c) le tally
+    # compte chaque option indépendamment.
+
+    test "POST avec option_ids enregistre N votes pour un même user",
+         %{conn: conn} do
+      {building, _admin} = setup_with_privileged()
+      voter = insert_user!(:coproprietaire)
+      {:ok, _} = Buildings.add_member(building.id, voter.id, :coproprietaire)
+
+      {:ok, battle} =
+        Battles.create_battle(building.id, voter.id, %{
+          "title" => "Quel(s) brise-vue ?",
+          "vote_mode" => "multiple_choice",
+          "options" => [
+            %{"label" => "Gris"},
+            %{"label" => "Beige"},
+            %{"label" => "Bambou"}
+          ]
+        })
+
+      vote_round = hd(battle.votes)
+      [o1, o2, _o3] = Enum.sort_by(vote_round.options, & &1.position)
+
+      conn =
+        conn
+        |> authed(voter)
+        |> post(
+          ~p"/api/v1/buildings/#{building.id}/battles/#{battle.id}/vote",
+          %{"option_ids" => [o1.id, o2.id]}
+        )
+
+      assert %{"data" => data} = json_response(conn, 200)
+      [round] = data["rounds"]
+      # Comme on est en multi : 2 lignes vote_response pour 1 user.
+      assert round["total_votes"] == 1
+      # Chaque option votée individuellement compte 1
+      counts = round["options"] |> Enum.map(&{&1["label"], &1["votes"]}) |> Map.new()
+      assert counts["Gris"] == 1
+      assert counts["Beige"] == 1
+      assert counts["Bambou"] == 0
+      # own_option_ids contient les deux ids cochés
+      assert Enum.sort(round["own_option_ids"]) == Enum.sort([o1.id, o2.id])
+    end
+
+    test "REMPLACE le set précédent — re-voter avec un set différent efface l'ancien",
+         %{conn: conn} do
+      {building, _admin} = setup_with_privileged()
+      voter = insert_user!(:coproprietaire)
+      {:ok, _} = Buildings.add_member(building.id, voter.id, :coproprietaire)
+
+      {:ok, battle} =
+        Battles.create_battle(building.id, voter.id, %{
+          "title" => "Multi",
+          "vote_mode" => "multiple_choice",
+          "options" => [%{"label" => "A"}, %{"label" => "B"}, %{"label" => "C"}]
+        })
+
+      vote_round = hd(battle.votes)
+      [o_a, o_b, o_c] = Enum.sort_by(vote_round.options, & &1.position)
+
+      # 1er cast : A + B
+      conn
+      |> authed(voter)
+      |> post(~p"/api/v1/buildings/#{building.id}/battles/#{battle.id}/vote",
+        %{"option_ids" => [o_a.id, o_b.id]}
+      )
+
+      # 2e cast : C uniquement → doit retirer A et B
+      conn2 =
+        build_conn()
+        |> authed(voter)
+        |> post(~p"/api/v1/buildings/#{building.id}/battles/#{battle.id}/vote",
+          %{"option_ids" => [o_c.id]}
+        )
+
+      assert %{"data" => data} = json_response(conn2, 200)
+      [round] = data["rounds"]
+      assert round["own_option_ids"] == [o_c.id]
+      counts = round["options"] |> Enum.map(&{&1["label"], &1["votes"]}) |> Map.new()
+      assert counts["A"] == 0
+      assert counts["B"] == 0
+      assert counts["C"] == 1
+    end
+
+    test "liste vide d'option_ids = abstention (efface les votes existants)",
+         %{conn: conn} do
+      {building, _admin} = setup_with_privileged()
+      voter = insert_user!(:coproprietaire)
+      {:ok, _} = Buildings.add_member(building.id, voter.id, :coproprietaire)
+
+      {:ok, battle} =
+        Battles.create_battle(building.id, voter.id, %{
+          "title" => "Multi",
+          "vote_mode" => "multiple_choice",
+          "options" => [%{"label" => "A"}, %{"label" => "B"}]
+        })
+
+      [o_a, _o_b] =
+        Enum.sort_by(hd(battle.votes).options, & &1.position)
+
+      conn
+      |> authed(voter)
+      |> post(~p"/api/v1/buildings/#{building.id}/battles/#{battle.id}/vote",
+        %{"option_ids" => [o_a.id]}
+      )
+
+      conn2 =
+        build_conn()
+        |> authed(voter)
+        |> post(~p"/api/v1/buildings/#{building.id}/battles/#{battle.id}/vote",
+          %{"option_ids" => []}
+        )
+
+      assert %{"data" => data} = json_response(conn2, 200)
+      assert hd(data["rounds"])["own_option_ids"] == []
+      assert hd(data["rounds"])["total_votes"] == 0
+    end
+
+    test "option_id inconnue → 422 invalid_option_ids",
+         %{conn: conn} do
+      {building, _admin} = setup_with_privileged()
+      voter = insert_user!(:coproprietaire)
+      {:ok, _} = Buildings.add_member(building.id, voter.id, :coproprietaire)
+
+      {:ok, battle} =
+        Battles.create_battle(building.id, voter.id, %{
+          "title" => "Multi",
+          "vote_mode" => "multiple_choice",
+          "options" => [%{"label" => "A"}, %{"label" => "B"}]
+        })
+
+      bogus = Ecto.UUID.generate()
+
+      conn =
+        conn
+        |> authed(voter)
+        |> post(~p"/api/v1/buildings/#{building.id}/battles/#{battle.id}/vote",
+          %{"option_ids" => [bogus]}
+        )
+
+      assert %{"error" => err, "invalid_option_ids" => ids} = json_response(conn, 422)
+      assert err =~ "Option(s) inconnue(s)"
+      assert ids == [bogus]
+    end
+  end
+
+  describe "allow_none — option built-in « Aucune des propositions »" do
+    # Feedback voisin Q1 : « il manque une option ne se prononce pas ».
+    # Quand `allow_none: true`, on injecte automatiquement une option
+    # à la sentinelle 9999, reconnaissable par `is_none: true` côté API.
+
+    test "création avec allow_none=true ajoute l'option « Aucune des propositions »",
+         %{conn: conn} do
+      {building, admin} = setup_with_privileged()
+
+      conn =
+        conn
+        |> authed(admin)
+        |> post(~p"/api/v1/buildings/#{building.id}/battles", %{
+          "battle" => %{
+            "title" => "Choix brise-vue",
+            "allow_none" => true,
+            "options" => [
+              %{"label" => "Gris"},
+              %{"label" => "Beige"}
+            ]
+          }
+        })
+
+      assert %{"data" => data} = json_response(conn, 201)
+      assert data["allow_none"] == true
+      [round] = data["rounds"]
+
+      # 3 options : les 2 utilisateurs + « Aucune »
+      assert length(round["options"]) == 3
+
+      none_opt = Enum.find(round["options"], & &1["is_none"])
+      assert none_opt
+      assert none_opt["label"] == "Aucune des propositions"
+      assert none_opt["position"] == 9999
+    end
+
+    test "création sans allow_none → pas d'option « Aucune » injectée",
+         %{conn: conn} do
+      {building, admin} = setup_with_privileged()
+
+      conn =
+        conn
+        |> authed(admin)
+        |> post(~p"/api/v1/buildings/#{building.id}/battles", %{
+          "battle" => %{
+            "title" => "Sans abstention built-in",
+            "options" => [%{"label" => "A"}, %{"label" => "B"}]
+          }
+        })
+
+      assert %{"data" => data} = json_response(conn, 201)
+      assert data["allow_none"] == false
+      [round] = data["rounds"]
+      assert length(round["options"]) == 2
+      refute Enum.any?(round["options"], & &1["is_none"])
     end
   end
 

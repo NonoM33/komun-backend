@@ -23,6 +23,7 @@ defmodule KomunBackend.Battles.Battle do
   @foreign_key_type :binary_id
 
   @statuses [:running, :finished, :cancelled]
+  @vote_modes [:single_choice, :multiple_choice]
 
   schema "battles" do
     field :title, :string
@@ -33,6 +34,18 @@ defmodule KomunBackend.Battles.Battle do
     field :max_rounds, :integer, default: 2
     field :current_round, :integer, default: 1
     field :quorum_pct, :integer, default: 30
+
+    # `:single_choice` (par défaut) : un voisin coche UNE option.
+    # `:multiple_choice` : il peut en cocher autant qu'il veut, le
+    # tally compte chaque option indépendamment (l'option avec le plus
+    # de coches gagne). Cf. feedback voisin 2026-05-25.
+    field :vote_mode, Ecto.Enum, values: @vote_modes, default: :single_choice
+
+    # Si `true`, on injecte automatiquement une option « Aucune des
+    # propositions » dans chaque round — pour les voisins qui rejettent
+    # toutes les propositions. Si elle gagne, la battle termine sans
+    # `winning_option_label` (no winner, message explicite côté UI).
+    field :allow_none, :boolean, default: false
 
     field :winning_option_label, :string
 
@@ -45,6 +58,7 @@ defmodule KomunBackend.Battles.Battle do
   end
 
   def statuses, do: @statuses
+  def vote_modes, do: @vote_modes
 
   def create_changeset(battle, attrs) do
     battle
@@ -54,6 +68,8 @@ defmodule KomunBackend.Battles.Battle do
       :round_duration_days,
       :max_rounds,
       :quorum_pct,
+      :vote_mode,
+      :allow_none,
       :building_id,
       :created_by_id
     ])
