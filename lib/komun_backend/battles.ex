@@ -664,8 +664,19 @@ defmodule KomunBackend.Battles do
     member_count = active_member_count(building_id)
 
     cond do
-      is_nil(member_count) or member_count == 0 -> 0
-      true -> round(vote_count * 100 / member_count)
+      is_nil(member_count) or member_count == 0 ->
+        0
+
+      true ->
+        # Cap à 100 % (bug visible sur stg : « 200% participation »
+        # quand la battle a plus de votes que de membres actifs — typique
+        # d'une battle de test où un super_admin vote en se faisant
+        # passer pour plusieurs users, ou d'une battle qui a survécu à
+        # une réinit des membres). Cap intentionnel — on ne corrige pas
+        # la cause profonde ici, juste la UI qui devient grotesque.
+        member_count
+        |> then(&round(vote_count * 100 / &1))
+        |> min(100)
     end
   end
 
