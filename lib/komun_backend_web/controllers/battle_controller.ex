@@ -14,7 +14,7 @@ defmodule KomunBackendWeb.BattleController do
 
     with :ok <- authorize_building(conn, building_id) do
       battles = Battles.list_battles(building_id)
-      json(conn, %{data: Enum.map(battles, &battle_json(&1, user.id))})
+      json(conn, %{data: Enum.map(battles, &battle_json(&1, user))})
     end
   end
 
@@ -37,7 +37,7 @@ defmodule KomunBackendWeb.BattleController do
           Battles.list_residence_battles(residence_id, user.id)
         end
 
-      json(conn, %{data: Enum.map(battles, &battle_json(&1, user.id))})
+      json(conn, %{data: Enum.map(battles, &battle_json(&1, user))})
     end
   end
 
@@ -53,7 +53,7 @@ defmodule KomunBackendWeb.BattleController do
           conn |> put_status(:not_found) |> json(%{error: "Not found"}) |> halt()
 
         true ->
-          json(conn, %{data: battle_json(battle, user.id)})
+          json(conn, %{data: battle_json(battle, user)})
       end
     end
   end
@@ -99,7 +99,7 @@ defmodule KomunBackendWeb.BattleController do
 
     case Battles.create_battle(building_id, user.id, attrs) do
       {:ok, %Battle{} = battle} ->
-        conn |> put_status(:created) |> json(%{data: battle_json(battle, user.id)})
+        conn |> put_status(:created) |> json(%{data: battle_json(battle, user)})
 
       {:error, :need_at_least_two_options} ->
         conn
@@ -163,10 +163,10 @@ defmodule KomunBackendWeb.BattleController do
               true ->
                 case Battles.move_battle(id, new_building_id) do
                   {:ok, moved} ->
-                    json(conn, %{data: battle_json(moved, user.id)})
+                    json(conn, %{data: battle_json(moved, user)})
 
                   {:error, :same_building} ->
-                    json(conn, %{data: battle_json(battle, user.id)})
+                    json(conn, %{data: battle_json(battle, user)})
 
                   {:error, :different_residence} ->
                     conn
@@ -215,7 +215,7 @@ defmodule KomunBackendWeb.BattleController do
           case Battles.cast_vote(id, user.id, payload) do
             {:ok, _} ->
               fresh = Battles.get_battle!(id)
-              json(conn, %{data: battle_json(fresh, user.id)})
+              json(conn, %{data: battle_json(fresh, user)})
 
             {:error, :no_open_round} ->
               conn
@@ -324,13 +324,13 @@ defmodule KomunBackendWeb.BattleController do
           true ->
             case Battles.advance_battle!(id) do
               {:noop, b} ->
-                json(conn, %{data: battle_json(b, user.id), state: "noop"})
+                json(conn, %{data: battle_json(b, user), state: "noop"})
 
               {:advanced, b} ->
-                json(conn, %{data: battle_json(b, user.id), state: "advanced"})
+                json(conn, %{data: battle_json(b, user), state: "advanced"})
 
               {:finished, b} ->
-                json(conn, %{data: battle_json(b, user.id), state: "finished"})
+                json(conn, %{data: battle_json(b, user), state: "finished"})
             end
         end
     end
@@ -450,8 +450,20 @@ defmodule KomunBackendWeb.BattleController do
     if user.role in @privileged_roles, do: :ok, else: {:error, :unauthorized}
   end
 
-  defp battle_json(%Battle{} = b, user_id) do
-    votes = Enum.map(safe_list(b.votes), &vote_round_json(&1, user_id, b))
+  # Hot patch (2026-05-25) : on prend l'objet `viewer` complet en plus
+  # du `user_id` parce qu'on a besoin du `viewer.role` pour décider si
+  # on attache la liste nominale des voteurs sur chaque option (CS et
+  # syndic ont droit à la transparence interne ; un copro lambda ne
+  # voit que les compteurs anonymes). `user_id` reste utilisé pour
+  # marquer la propre option du viewer (`own_option_ids`).
+  defp battle_json(%Battle{} = b, viewer) when is_map(viewer) do
+    viewer_privileged = viewer.role in @privileged_roles
+
+    votes =
+      Enum.map(
+        safe_list(b.votes),
+        &vote_round_json(&1, viewer.id, b, viewer_privileged)
+      )
 
     %{
       id: b.id,
@@ -495,10 +507,33 @@ defmodule KomunBackendWeb.BattleController do
     end
   end
 
-  defp vote_round_json(%Vote{} = v, user_id, battle) do
+  defp vote_round_json(%Vote{} = v, user_id, battle, viewer_privileged \\ false) do
     options = Enum.map(safe_list(v.options), &option_json/1)
     responses = safe_list(v.responses)
     counts = Enum.frequencies_by(responses, & &1.option_id)
+
+    # Transparence CS (2026-05-25) : les membres du conseil syndical
+    # et le syndic ont besoin de voir QUI a voté QUOI pour pouvoir
+    # piloter la copro (relancer les abstentionnistes, comprendre les
+    # blocages, justifier une décision). Pour un copro lambda on
+    # n'expose que les compteurs — pas question de fliquer le voisinage.
+    voters_by_option =
+      if viewer_privileged do
+        responses
+        |> Enum.group_by(& &1.option_id)
+        |> Map.new(fn {opt_id, rs} ->
+          users =
+            rs
+            |> Enum.map(& &1.user)
+            |> Enum.reject(&(&1 == nil or match?(%Ecto.Association.NotLoaded{}, &1)))
+            |> Enum.sort_by(&user_sort_key/1)
+            |> Enum.map(&voter_json/1)
+
+          {opt_id, users}
+        end)
+      else
+        %{}
+      end
 
     own_option_ids =
       responses
@@ -537,11 +572,35 @@ defmodule KomunBackendWeb.BattleController do
           o
           |> Map.put(:votes, Map.get(counts, o.id, 0))
           |> Map.put(:is_none, o.position == Battles.none_option_position())
+          # `voters` est présent UNIQUEMENT pour les viewers privilégiés
+          # — cf. `voters_by_option` ci-dessus. Pour un copro lambda,
+          # la clé n'apparaît pas du tout dans le JSON (le frontend
+          # check sa présence pour décider d'afficher la pile d'avatars).
+          |> Map.merge(
+            if viewer_privileged,
+              do: %{voters: Map.get(voters_by_option, o.id, [])},
+              else: %{}
+          )
         end),
       total_votes: total_voters,
       own_option_id: own_option_id,
       own_option_ids: own_option_ids,
       is_current: is_current
+    }
+  end
+
+  defp user_sort_key(u) do
+    last = (u.last_name || "") |> String.downcase()
+    first = (u.first_name || "") |> String.downcase()
+    {last, first, u.email || ""}
+  end
+
+  defp voter_json(u) do
+    %{
+      id: u.id,
+      first_name: u.first_name,
+      last_name: u.last_name,
+      avatar_url: u.avatar_url
     }
   end
 

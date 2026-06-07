@@ -66,6 +66,9 @@ defmodule KomunBackend.MixProject do
 
       # ── Utilities ────────────────────────────────────────────────────────────
       {:ecto_ulid, "~> 0.3"},
+      # Base de données timezone (DST-safe) pour convertir les datetimes
+      # UTC stockés en heure locale Europe/Paris (affichage + emails).
+      {:tz, "~> 0.28"},
 
       # ── Dev / Test ───────────────────────────────────────────────────────────
       {:phoenix_live_reload, "~> 1.2", only: :dev},

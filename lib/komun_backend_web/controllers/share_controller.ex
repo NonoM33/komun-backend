@@ -235,7 +235,10 @@ defmodule KomunBackendWeb.ShareController do
   defp format_event_description(%Event{} = event) do
     base = event.description || "Un événement de voisinage organisé sur Komun."
 
-    when_str = Calendar.strftime(event.starts_at, "📅 %d/%m/%Y à %H:%M")
+    when_str =
+      event.starts_at
+      |> KomunBackend.LocalTime.to_local()
+      |> Calendar.strftime("📅 %d/%m/%Y à %H:%M")
 
     where =
       case event.location_label do

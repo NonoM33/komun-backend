@@ -811,4 +811,212 @@ defmodule KomunBackendWeb.BattleControllerTest do
       assert reloaded.winning_option_label == nil
     end
   end
+
+  describe "annulation de vote (option_id null / option_ids [])" do
+    # Feedback voisin (2026-05-25) : « une personne doit pouvoir
+    # annuler son vote ». Le backend supporte déjà la sémantique :
+    #   * single_choice : option_id=null → DELETE de la response.
+    #   * multi_choice  : option_ids=[]  → delete_all des responses.
+    # Ces tests verrouillent ce comportement pour éviter qu'une
+    # régression future (genre validate_required sur option_id)
+    # ne casse silencieusement l'UI « Annuler mon vote ».
+
+    test "single_choice : option_id=null efface la response existante",
+         %{conn: conn} do
+      {building, _admin} = setup_with_privileged()
+      voter = insert_user!(:coproprietaire)
+      {:ok, _} = Buildings.add_member(building.id, voter.id, :coproprietaire)
+
+      {:ok, battle} =
+        Battles.create_battle(building.id, voter.id, %{
+          "title" => "Single",
+          "options" => [%{"label" => "A"}, %{"label" => "B"}]
+        })
+
+      [opt_a, _] = Enum.sort_by(hd(battle.votes).options, & &1.position)
+
+      # Vote initial
+      conn
+      |> authed(voter)
+      |> post(~p"/api/v1/buildings/#{building.id}/battles/#{battle.id}/vote",
+        %{"option_id" => opt_a.id}
+      )
+
+      # Annulation explicite via option_id=null
+      conn2 =
+        build_conn()
+        |> authed(voter)
+        |> post(~p"/api/v1/buildings/#{building.id}/battles/#{battle.id}/vote",
+          %{"option_id" => nil}
+        )
+
+      assert %{"data" => data} = json_response(conn2, 200)
+      [round] = data["rounds"]
+      assert round["own_option_id"] == nil
+      assert round["own_option_ids"] == []
+      assert round["total_votes"] == 0
+    end
+
+    test "single_choice : annuler quand l'user n'a pas encore voté = no-op (pas d'erreur)",
+         %{conn: conn} do
+      {building, _admin} = setup_with_privileged()
+      voter = insert_user!(:coproprietaire)
+      {:ok, _} = Buildings.add_member(building.id, voter.id, :coproprietaire)
+
+      {:ok, battle} =
+        Battles.create_battle(building.id, voter.id, %{
+          "title" => "Single",
+          "options" => [%{"label" => "A"}, %{"label" => "B"}]
+        })
+
+      conn =
+        conn
+        |> authed(voter)
+        |> post(~p"/api/v1/buildings/#{building.id}/battles/#{battle.id}/vote",
+          %{"option_id" => nil}
+        )
+
+      assert %{"data" => data} = json_response(conn, 200)
+      [round] = data["rounds"]
+      assert round["own_option_ids"] == []
+    end
+
+    test "multi_choice : option_ids=[] efface tous les votes existants du user",
+         %{conn: conn} do
+      # Couvert dans le describe multi-choice plus haut, mais répété
+      # ici sous l'angle « annulation explicite » pour que la table
+      # des matières des tests reflète directement la feature voisin.
+      {building, _admin} = setup_with_privileged()
+      voter = insert_user!(:coproprietaire)
+      {:ok, _} = Buildings.add_member(building.id, voter.id, :coproprietaire)
+
+      {:ok, battle} =
+        Battles.create_battle(building.id, voter.id, %{
+          "title" => "Multi annulable",
+          "vote_mode" => "multiple_choice",
+          "options" => [%{"label" => "X"}, %{"label" => "Y"}, %{"label" => "Z"}]
+        })
+
+      [ox, oy, _] = Enum.sort_by(hd(battle.votes).options, & &1.position)
+
+      conn
+      |> authed(voter)
+      |> post(~p"/api/v1/buildings/#{building.id}/battles/#{battle.id}/vote",
+        %{"option_ids" => [ox.id, oy.id]}
+      )
+
+      conn2 =
+        build_conn()
+        |> authed(voter)
+        |> post(~p"/api/v1/buildings/#{building.id}/battles/#{battle.id}/vote",
+          %{"option_ids" => []}
+        )
+
+      assert %{"data" => data} = json_response(conn2, 200)
+      [round] = data["rounds"]
+      assert round["own_option_ids"] == []
+      assert round["total_votes"] == 0
+    end
+  end
+
+  describe "voters visibility (transparence CS / syndic / super_admin)" do
+    # Feedback voisin du 2026-05-25 : « les membres du CS et l'admin
+    # doivent voir QUI a voté quoi ». Pour un copro lambda on n'expose
+    # rien — pas de fliquage du voisinage. La présence ou absence de
+    # la clé `voters` sur chaque option est ce qui distingue les deux.
+
+    defp setup_battle_with_one_vote do
+      {building, _admin_creator} = setup_with_privileged()
+      voter = insert_user!(:coproprietaire)
+
+      voter =
+        voter
+        |> Ecto.Changeset.change(first_name: "Coralie", last_name: "Airieau")
+        |> Repo.update!()
+
+      {:ok, _} = Buildings.add_member(building.id, voter.id, :coproprietaire)
+
+      {:ok, battle} =
+        Battles.create_battle(building.id, voter.id, %{
+          "title" => "Brises vues",
+          "options" => [%{"label" => "Gris"}, %{"label" => "Beige"}]
+        })
+
+      [opt_gris, _] = Enum.sort_by(hd(battle.votes).options, & &1.position)
+
+      # Le copro vote
+      build_conn()
+      |> authed(voter)
+      |> post(
+        ~p"/api/v1/buildings/#{building.id}/battles/#{battle.id}/vote",
+        %{"option_id" => opt_gris.id}
+      )
+
+      {building, battle, voter, opt_gris}
+    end
+
+    test "viewer membre_cs : `voters` est présent avec nom/prénom",
+         %{conn: conn} do
+      {building, battle, _voter, opt_gris} = setup_battle_with_one_vote()
+
+      cs_member = insert_user!(:membre_cs)
+      {:ok, _} = Buildings.add_member(building.id, cs_member.id, :membre_cs)
+
+      conn =
+        conn
+        |> authed(cs_member)
+        |> get(~p"/api/v1/buildings/#{building.id}/battles/#{battle.id}")
+
+      assert %{"data" => data} = json_response(conn, 200)
+      [round] = data["rounds"]
+
+      gris_opt = Enum.find(round["options"], &(&1["id"] == opt_gris.id))
+
+      assert is_list(gris_opt["voters"])
+      assert length(gris_opt["voters"]) == 1
+      voter_json = hd(gris_opt["voters"])
+      assert voter_json["first_name"] == "Coralie"
+      assert voter_json["last_name"] == "Airieau"
+    end
+
+    test "viewer super_admin : `voters` est présent (audit cross-copropriété)",
+         %{conn: conn} do
+      {building, battle, _voter, opt_gris} = setup_battle_with_one_vote()
+
+      admin = insert_user!(:super_admin)
+
+      conn =
+        conn
+        |> authed(admin)
+        |> get(~p"/api/v1/buildings/#{building.id}/battles/#{battle.id}")
+
+      assert %{"data" => data} = json_response(conn, 200)
+      gris_opt = Enum.find(hd(data["rounds"])["options"], &(&1["id"] == opt_gris.id))
+      assert is_list(gris_opt["voters"])
+      assert length(gris_opt["voters"]) == 1
+    end
+
+    test "viewer copropriétaire lambda : la clé `voters` est ABSENTE du JSON",
+         %{conn: conn} do
+      {building, battle, _voter, opt_gris} = setup_battle_with_one_vote()
+
+      autre_voisin = insert_user!(:coproprietaire)
+      {:ok, _} = Buildings.add_member(building.id, autre_voisin.id, :coproprietaire)
+
+      conn =
+        conn
+        |> authed(autre_voisin)
+        |> get(~p"/api/v1/buildings/#{building.id}/battles/#{battle.id}")
+
+      assert %{"data" => data} = json_response(conn, 200)
+      gris_opt = Enum.find(hd(data["rounds"])["options"], &(&1["id"] == opt_gris.id))
+
+      # Crucial : la CLÉ n'apparaît pas du tout dans le JSON. Pas une
+      # liste vide, pas null — absente. Le frontend check sa présence
+      # pour décider d'afficher la pile d'avatars.
+      refute Map.has_key?(gris_opt, "voters")
+      # Le compteur reste public, lui.
+      assert gris_opt["votes"] == 1
+    end
+  end
 end
