@@ -696,6 +696,7 @@ defmodule KomunBackendWeb.EventController do
       requires_registration: event.requires_registration,
       allow_plus_ones: event.allow_plus_ones,
       kid_friendly: event.kid_friendly,
+      is_informational: event.is_informational,
       cancelled_at: event.cancelled_at,
       cancelled_reason: event.cancelled_reason,
       target_resident_types: event.target_resident_types || [],

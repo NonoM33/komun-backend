@@ -29,6 +29,10 @@ defmodule KomunBackend.Events.Event do
     field :allow_plus_ones, :boolean, default: true
     field :kid_friendly, :boolean, default: true
 
+    # Événement informatif (annonce datée) : pas d'inscription, pas
+    # d'apports, pas d'accompagnants. Le frontend masque ces sections.
+    field :is_informational, :boolean, default: false
+
     field :cancelled_at, :utc_datetime
     field :cancelled_reason, :string
 
@@ -70,6 +74,7 @@ defmodule KomunBackend.Events.Event do
     :requires_registration,
     :allow_plus_ones,
     :kid_friendly,
+    :is_informational,
     :residence_id,
     :creator_id,
     :reminder_job_id,
