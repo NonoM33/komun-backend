@@ -465,7 +465,7 @@ defmodule KomunBackend.Events do
   defp format_when_html(event), do: format_when_text(event)
 
   defp format_when_text(%Event{starts_at: s}) do
-    "📅 " <> Calendar.strftime(s, "%d/%m/%Y à %H:%M")
+    "📅 " <> Calendar.strftime(KomunBackend.LocalTime.to_local(s), "%d/%m/%Y à %H:%M")
   end
 
   defp insert_scopes(multi, []), do: multi
