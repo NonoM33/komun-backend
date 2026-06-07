@@ -16,7 +16,7 @@ defmodule KomunBackendWeb.ShareControllerTest do
 
   import Ecto.Query
 
-  alias KomunBackend.{Articles, Battles, Buildings, Projects, Repo, Residences}
+  alias KomunBackend.{Articles, Battles, Buildings, Events, Projects, Repo, Residences}
   alias KomunBackend.Accounts.User
   alias KomunBackend.Buildings.Building
   alias KomunBackend.Residences.Residence
@@ -226,6 +226,57 @@ defmodule KomunBackendWeb.ShareControllerTest do
       assert response = response(conn, 200)
       assert response =~ "Réfection toiture"
       assert response =~ "Collecte de devis"
+    end
+  end
+
+  describe "GET /share/events/:id — heure locale" do
+    test "un event à 8h Paris (06:00 UTC en été) s'affiche « à 08:00 », pas « à 06:00 »",
+         %{conn: conn} do
+      # Régression : l'aperçu WhatsApp affichait l'heure UTC brute. Un
+      # nettoyage des parkings « jeudi 11 juin de 8h à 14h » était stocké
+      # 06:00:00Z (Europe/Paris = UTC+2 en juin) et s'affichait « à 06:00 ».
+      residence = insert_residence!()
+      building = insert_building!(residence)
+      creator = insert_user!(:syndic_manager)
+      {:ok, _} = Buildings.add_member(building.id, creator.id, :president_cs)
+
+      {:ok, event} =
+        Events.create_event(residence.id, creator, %{
+          "title" => "Nettoyage des parkings",
+          "description" => "Un nettoyage complet des parkings A et B.",
+          "status" => "published",
+          "starts_at" => ~U[2026-06-11 06:00:00Z],
+          "ends_at" => ~U[2026-06-11 12:00:00Z],
+          "location_label" => "Parkings de la résidence"
+        })
+
+      conn = get(conn, ~p"/share/events/#{event.id}")
+
+      assert response = response(conn, 200)
+      assert response =~ "11/06/2026 à 08:00"
+      refute response =~ "à 06:00"
+    end
+
+    test "un event en hiver respecte UTC+1 (13:00 UTC → « à 14:00 »)",
+         %{conn: conn} do
+      # Sécurise le DST : pas d'offset codé en dur. En janvier Paris = UTC+1.
+      residence = insert_residence!()
+      building = insert_building!(residence)
+      creator = insert_user!(:syndic_manager)
+      {:ok, _} = Buildings.add_member(building.id, creator.id, :president_cs)
+
+      {:ok, event} =
+        Events.create_event(residence.id, creator, %{
+          "title" => "Vœux du conseil syndical",
+          "status" => "published",
+          "starts_at" => ~U[2026-01-15 13:00:00Z],
+          "ends_at" => ~U[2026-01-15 15:00:00Z]
+        })
+
+      conn = get(conn, ~p"/share/events/#{event.id}")
+
+      assert response = response(conn, 200)
+      assert response =~ "15/01/2026 à 14:00"
     end
   end
 

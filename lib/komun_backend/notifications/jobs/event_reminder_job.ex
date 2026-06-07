@@ -130,10 +130,13 @@ defmodule KomunBackend.Notifications.Jobs.EventReminderJob do
   defp maybe_description(%Event{description: desc}),
     do: EmailLayout.p(EmailLayout.escape(desc))
 
-  defp format_time(%DateTime{} = dt) do
+  defp format_time(%DateTime{} = utc_dt) do
     # Format "vendredi 17 mai à 18:00" — minimal, on évite Timex pour
     # ne pas ajouter une dépendance pour un seul format. Locale fr en
-    # dur — la cible est francophone.
+    # dur — la cible est francophone. On convertit d'abord en heure
+    # locale Europe/Paris (le datetime stocké est en UTC).
+    dt = KomunBackend.LocalTime.to_local(utc_dt)
+
     days = ~w(lundi mardi mercredi jeudi vendredi samedi dimanche)
 
     months = ~w(janvier février mars avril mai juin juillet août

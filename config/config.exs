@@ -5,6 +5,12 @@ config :komun_backend,
   ecto_repos: [KomunBackend.Repo],
   generators: [timestamp_type: :utc_datetime, binary_id: true]
 
+# ── Timezone ──────────────────────────────────────────────────────────────────
+# Les datetimes sont stockés en UTC. Pour les afficher (preview OG, emails)
+# en heure locale française — DST géré automatiquement — on branche la base
+# de données de fuseaux `tz` sur `DateTime.shift_zone/2`.
+config :elixir, :time_zone_database, Tz.TimeZoneDatabase
+
 # ── Endpoint ─────────────────────────────────────────────────────────────────
 config :komun_backend, KomunBackendWeb.Endpoint,
   url: [host: "localhost"],
