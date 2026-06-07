@@ -136,6 +136,35 @@ defmodule KomunBackend.EventsTest do
       assert [scope] = event.building_scopes
       assert scope.building_id == ctx.building_a.id
     end
+
+    test "is_informational vaut false par défaut" do
+      ctx = setup_residence_with_council()
+
+      attrs = %{
+        "title" => "Fête des voisins",
+        "starts_at" => future_dt(48),
+        "ends_at" => future_dt(52),
+        "status" => "published"
+      }
+
+      assert {:ok, event} = Events.create_event(ctx.residence.id, ctx.council, attrs)
+      assert event.is_informational == false
+    end
+
+    test "is_informational peut être activé (événement informatif)" do
+      ctx = setup_residence_with_council()
+
+      attrs = %{
+        "title" => "Nettoyage des parkings",
+        "starts_at" => future_dt(48),
+        "ends_at" => future_dt(52),
+        "status" => "published",
+        "is_informational" => true
+      }
+
+      assert {:ok, event} = Events.create_event(ctx.residence.id, ctx.council, attrs)
+      assert event.is_informational == true
+    end
   end
 
   describe "list_events_for_building/3" do
