@@ -34,6 +34,67 @@ defmodule KomunBackend.Residences do
 
   def get_residence(id), do: Repo.get(Residence, id)
 
+  @doc """
+  Liste les `building_id` actifs d'une résidence.
+
+  Utilisé par les endpoints qui agrègent des données d'une résidence
+  via leurs bâtiments (ex. activité d'un voisin sur l'ensemble de la
+  copro). Renvoie une liste vide si la résidence n'existe pas / est
+  inactive — les callers décident s'ils transforment ça en 404.
+  """
+  def list_active_building_ids(residence_id) do
+    from(b in Building,
+      where: b.residence_id == ^residence_id and b.is_active == true,
+      select: b.id
+    )
+    |> Repo.all()
+  end
+
+  @doc """
+  Vrai si `user` est privilégié dans **au moins un** bâtiment actif de
+  la résidence (ou est `super_admin` global). Sert à gater l'accès aux
+  endpoints qui agrègent l'activité d'un autre voisin sur la résidence.
+
+  Privilégiés : `super_admin`, `syndic_manager`, `syndic_staff`,
+  `president_cs`, `membre_cs`.
+  """
+  def privileged_member?(_residence_id, nil), do: false
+
+  def privileged_member?(_residence_id, %{role: :super_admin}), do: true
+
+  def privileged_member?(residence_id, %{id: user_id, role: role}) do
+    # Distinction importante : les rôles `:syndic_manager` / `:syndic_staff`
+    # vivent sur User.role (rôle global, plateforme-wide), tandis que
+    # `:president_cs` / `:membre_cs` sont sur BuildingMember.role (rôle
+    # par bâtiment). On vérifie donc le rôle global d'abord — un syndic
+    # est privilégié partout — puis on regarde si l'user a un rôle CS
+    # dans au moins un bâtiment de la résidence.
+    global_privileged = ~w(syndic_manager syndic_staff)a
+    council_roles = ~w(president_cs membre_cs)a
+
+    if role in global_privileged or role in council_roles do
+      true
+    else
+      from(m in BuildingMember,
+        join: b in Building,
+        on: b.id == m.building_id,
+        where:
+          b.residence_id == ^residence_id and
+            b.is_active == true and
+            m.is_active == true and
+            m.user_id == ^user_id and
+            m.role in ^council_roles,
+        select: 1,
+        limit: 1
+      )
+      |> Repo.one()
+      |> case do
+        nil -> false
+        _ -> true
+      end
+    end
+  end
+
   def get_residence_with_buildings!(id) do
     Residence
     |> Repo.get!(id)
