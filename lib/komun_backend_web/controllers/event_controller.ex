@@ -1,6 +1,8 @@
 defmodule KomunBackendWeb.EventController do
   use KomunBackendWeb, :controller
 
+  require Logger
+
   alias KomunBackend.{Buildings, Events}
   alias KomunBackend.Events.{Event, EventComment, EventContribution}
   alias KomunBackend.Auth.Guardian
@@ -100,7 +102,8 @@ defmodule KomunBackendWeb.EventController do
           not_found(conn)
 
         purge? and user.role not in [:super_admin, :syndic_manager] ->
-          forbidden(conn,
+          forbidden(
+            conn,
             "Suppression définitive réservée aux super_admin / syndic_manager. Utilise l'annulation simple sinon."
           )
 
@@ -168,9 +171,13 @@ defmodule KomunBackendWeb.EventController do
             end
 
           {:error, reason} ->
+            Logger.error(
+              "[events] upload_cover save failed event_id=#{event.id}: #{inspect(reason)}"
+            )
+
             conn
             |> put_status(:internal_server_error)
-            |> json(%{error: "Échec de l'enregistrement : #{inspect(reason)}"})
+            |> json(%{error: "Échec de l'enregistrement"})
         end
     end
   end
@@ -345,12 +352,15 @@ defmodule KomunBackendWeb.EventController do
   # Met à jour un claim précis (qty, commentaire). L'utilisateur ne peut
   # toucher qu'à SES propres claims (les organisateurs aussi pour faire
   # le ménage si besoin).
-  def update_claim(conn, %{
-        "building_id" => building_id,
-        "event_id" => event_id,
-        "id" => contribution_id,
-        "claim_id" => claim_id
-      } = params) do
+  def update_claim(
+        conn,
+        %{
+          "building_id" => building_id,
+          "event_id" => event_id,
+          "id" => contribution_id,
+          "claim_id" => claim_id
+        } = params
+      ) do
     user = Guardian.Plug.current_resource(conn)
     attrs = Map.get(params, "claim", %{})
 
@@ -436,10 +446,13 @@ defmodule KomunBackendWeb.EventController do
 
   # POST /api/v1/buildings/:building_id/events/:event_id/contributions/reorder
   # body : { "order": [contribution_id, …] }
-  def reorder_contributions(conn, %{
-        "building_id" => building_id,
-        "event_id" => event_id
-      } = params) do
+  def reorder_contributions(
+        conn,
+        %{
+          "building_id" => building_id,
+          "event_id" => event_id
+        } = params
+      ) do
     user = Guardian.Plug.current_resource(conn)
     order = Map.get(params, "order", [])
 
@@ -542,8 +555,7 @@ defmodule KomunBackendWeb.EventController do
               conn
               |> put_status(:too_many_requests)
               |> json(%{
-                error:
-                  "Un email a déjà été envoyé pour cet événement il y a moins d'une heure."
+                error: "Un email a déjà été envoyé pour cet événement il y a moins d'une heure."
               })
 
             {:error, :forbidden} ->
@@ -580,11 +592,14 @@ defmodule KomunBackendWeb.EventController do
 
   # POST /api/v1/buildings/:building_id/events/:event_id/comments/:id/reactions
   # body : %{ "emoji" => "❤️" }
-  def toggle_reaction(conn, %{
-        "building_id" => building_id,
-        "event_id" => event_id,
-        "id" => id
-      } = params) do
+  def toggle_reaction(
+        conn,
+        %{
+          "building_id" => building_id,
+          "event_id" => event_id,
+          "id" => id
+        } = params
+      ) do
     user = Guardian.Plug.current_resource(conn)
     emoji = Map.get(params, "emoji")
 
@@ -656,7 +671,8 @@ defmodule KomunBackendWeb.EventController do
     end
   end
 
-  defp not_found(conn), do: conn |> put_status(:not_found) |> json(%{error: "Not found"}) |> halt()
+  defp not_found(conn),
+    do: conn |> put_status(:not_found) |> json(%{error: "Not found"}) |> halt()
 
   defp forbidden(conn, msg),
     do: conn |> put_status(:forbidden) |> json(%{error: msg}) |> halt()

@@ -179,7 +179,9 @@ defmodule KomunBackendWeb.AdminController do
 
           user ->
             case Accounts.delete_user(user) do
-              {:ok, _} -> send_resp(conn, :no_content, "")
+              {:ok, _} ->
+                send_resp(conn, :no_content, "")
+
               {:error, cs} ->
                 conn
                 |> put_status(:unprocessable_entity)
@@ -249,7 +251,11 @@ defmodule KomunBackendWeb.AdminController do
             conn |> put_status(422) |> json(%{errors: format_errors(changeset)})
 
           {:error, reason} ->
-            conn |> put_status(422) |> json(%{error: inspect(reason)})
+            require Logger
+
+            Logger.error("[admin] promote_komun_staff failed user_id=#{id}: #{inspect(reason)}")
+
+            conn |> put_status(422) |> json(%{error: "Une erreur est survenue"})
         end
     end
   end
@@ -291,7 +297,13 @@ defmodule KomunBackendWeb.AdminController do
         })
 
       {:error, reason} ->
-        conn |> put_status(422) |> json(%{error: inspect(reason)})
+        require Logger
+
+        Logger.error(
+          "[admin] add_member failed building_id=#{building_id} user_id=#{user_id}: #{inspect(reason)}"
+        )
+
+        conn |> put_status(422) |> json(%{error: "Une erreur est survenue"})
     end
   end
 
@@ -315,11 +327,18 @@ defmodule KomunBackendWeb.AdminController do
         |> json(%{error: "already_member"})
 
       {:error, reason} ->
-        conn |> put_status(422) |> json(%{error: inspect(reason)})
+        require Logger
+
+        Logger.error(
+          "[admin] add_member(by email) failed building_id=#{building_id} email=#{email}: #{inspect(reason)}"
+        )
+
+        conn |> put_status(422) |> json(%{error: "Une erreur est survenue"})
     end
   end
 
-  def add_member(conn, _), do: conn |> put_status(400) |> json(%{error: "user_id or user_email required"})
+  def add_member(conn, _),
+    do: conn |> put_status(400) |> json(%{error: "user_id or user_email required"})
 
   # PUT /admin/buildings/:id/members/:user_id/role
   #
@@ -363,6 +382,7 @@ defmodule KomunBackendWeb.AdminController do
     case Accounts.get_user(user_id) do
       nil ->
         conn |> put_status(404) |> json(%{error: "User not found"})
+
       user ->
         case Accounts.update_user(user, %{first_name: nil, last_name: nil}) do
           {:ok, updated} -> json(conn, %{data: user_json(updated)})
@@ -401,7 +421,8 @@ defmodule KomunBackendWeb.AdminController do
       pending_residents:
         Repo.aggregate(
           from(u in User,
-            left_join: m in BuildingMember, on: m.user_id == u.id,
+            left_join: m in BuildingMember,
+            on: m.user_id == u.id,
             where: is_nil(m.id)
           ),
           :count,
@@ -506,7 +527,8 @@ defmodule KomunBackendWeb.AdminController do
     users =
       Repo.all(
         from(u in User,
-          left_join: m in BuildingMember, on: m.user_id == u.id,
+          left_join: m in BuildingMember,
+          on: m.user_id == u.id,
           where: is_nil(m.id),
           order_by: [desc: u.inserted_at]
         )
@@ -557,7 +579,9 @@ defmodule KomunBackendWeb.AdminController do
   end
 
   defp parse_role(role) do
-    valid = ~w(super_admin komun_staff syndic_manager syndic_staff president_cs membre_cs coproprietaire locataire gardien prestataire)
+    valid =
+      ~w(super_admin komun_staff syndic_manager syndic_staff president_cs membre_cs coproprietaire locataire gardien prestataire)
+
     if role in valid, do: {:ok, String.to_atom(role)}, else: {:error, :invalid_role}
   end
 
@@ -569,6 +593,7 @@ defmodule KomunBackendWeb.AdminController do
   defp format_errors(changeset) when is_struct(changeset) do
     Ecto.Changeset.traverse_errors(changeset, fn {msg, _} -> msg end)
   end
+
   defp format_errors(other), do: other
 
   defp reporter_name(%Ecto.Association.NotLoaded{}), do: nil
@@ -577,6 +602,7 @@ defmodule KomunBackendWeb.AdminController do
 
   defp full_name(%{first_name: f, last_name: l}) when is_binary(f) and is_binary(l),
     do: "#{f} #{l}"
+
   defp full_name(%{first_name: f}) when is_binary(f), do: f
   defp full_name(%{email: e}) when is_binary(e), do: e
   defp full_name(_), do: nil

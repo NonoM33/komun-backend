@@ -1,6 +1,8 @@
 defmodule KomunBackendWeb.BattleController do
   use KomunBackendWeb, :controller
 
+  require Logger
+
   alias KomunBackend.{Battles, Buildings, Residences}
   alias KomunBackend.Battles.Battle
   alias KomunBackend.Votes.{Uploads, Vote}
@@ -112,9 +114,11 @@ defmodule KomunBackendWeb.BattleController do
         |> json(%{errors: format_errors(cs)})
 
       {:error, reason} ->
+        Logger.error("[battles] create failed building_id=#{building_id}: #{inspect(reason)}")
+
         conn
         |> put_status(:unprocessable_entity)
-        |> json(%{error: inspect(reason)})
+        |> json(%{error: "Une erreur est survenue"})
     end
   end
 
@@ -185,9 +189,13 @@ defmodule KomunBackendWeb.BattleController do
                     |> json(%{errors: format_errors(cs)})
 
                   {:error, reason} ->
+                    Logger.error(
+                      "[battles] move failed battle_id=#{id} new_building_id=#{inspect(new_building_id)}: #{inspect(reason)}"
+                    )
+
                     conn
                     |> put_status(:unprocessable_entity)
-                    |> json(%{error: inspect(reason)})
+                    |> json(%{error: "Une erreur est survenue"})
                 end
             end
         end
@@ -287,9 +295,11 @@ defmodule KomunBackendWeb.BattleController do
                 send_resp(conn, :no_content, "")
 
               {:error, reason} ->
+                Logger.error("[battles] delete failed battle_id=#{id}: #{inspect(reason)}")
+
                 conn
                 |> put_status(:unprocessable_entity)
-                |> json(%{error: inspect(reason)})
+                |> json(%{error: "Une erreur est survenue"})
             end
         end
     end
