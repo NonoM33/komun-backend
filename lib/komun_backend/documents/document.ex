@@ -13,6 +13,7 @@ defmodule KomunBackend.Documents.Document do
     field :title, :string
     field :filename, :string
     field :file_url, :string
+
     field :category, Ecto.Enum,
       values: [
         :reglement,
@@ -27,6 +28,7 @@ defmodule KomunBackend.Documents.Document do
         :autre
       ],
       default: :autre
+
     field :file_size_bytes, :integer
     field :mime_type, :string
     field :is_public, :boolean, default: true
@@ -43,9 +45,21 @@ defmodule KomunBackend.Documents.Document do
 
   def changeset(doc, attrs) do
     doc
-    |> cast(attrs, [:title, :filename, :file_url, :category, :file_size_bytes,
-                    :mime_type, :is_public, :is_pinned, :is_archived, :archived_at,
-                    :content_text, :building_id, :uploaded_by_id])
+    |> cast(attrs, [
+      :title,
+      :filename,
+      :file_url,
+      :category,
+      :file_size_bytes,
+      :mime_type,
+      :is_public,
+      :is_pinned,
+      :is_archived,
+      :archived_at,
+      :content_text,
+      :building_id,
+      :uploaded_by_id
+    ])
     |> validate_required([:title, :building_id])
     |> maybe_auto_pin_reglement()
   end
@@ -57,14 +71,25 @@ defmodule KomunBackend.Documents.Document do
   defp maybe_auto_pin_reglement(changeset) do
     case get_change(changeset, :category) do
       :reglement ->
-        if get_field(changeset, :is_pinned) == nil or get_change(changeset, :is_pinned) == nil do
-          put_change(changeset, :is_pinned, true)
-        else
+        if is_pinned_provided?(changeset) do
           changeset
+        else
+          put_change(changeset, :is_pinned, true)
         end
 
       _ ->
         changeset
     end
   end
+
+  # `get_change/2` renvoie `nil` quand la valeur castée est égale au défaut
+  # du schéma (`is_pinned` par défaut à `false`) — on ne peut donc PAS s'en
+  # servir pour distinguer « champ absent » de « champ explicitement à
+  # `false` ». On regarde les params bruts du changeset : si l'appelant a
+  # fourni `is_pinned` (string ou atom), on respecte son choix.
+  defp is_pinned_provided?(%{params: params}) when is_map(params) do
+    Map.has_key?(params, "is_pinned") or Map.has_key?(params, :is_pinned)
+  end
+
+  defp is_pinned_provided?(_changeset), do: false
 end

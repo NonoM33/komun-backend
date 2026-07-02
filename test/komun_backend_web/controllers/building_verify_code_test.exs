@@ -24,15 +24,15 @@ defmodule KomunBackendWeb.BuildingVerifyCodeTest do
 
     {:ok, residence} =
       %Residence{}
-      |> Residence.changeset(%{
+      |> Residence.initial_changeset(%{
         name: "Résidence Test #{code}",
         join_code: residence_code
       })
       |> Repo.insert()
 
     %Building{}
-    |> Building.changeset(%{
-      name: "Bâtiment Test",
+    |> Building.initial_changeset(%{
+      name: "Résidence Test",
       address: "10 rue des Lilas",
       city: "Paris",
       postal_code: "75001",

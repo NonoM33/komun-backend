@@ -20,40 +20,53 @@ defmodule KomunBackendWeb.BuildingController do
         Buildings.list_user_buildings(user.id)
       end
 
-    json(conn, %{data: Enum.map(results, fn {b, role} ->
-      base = %{
-        id: b.id,
-        name: b.name,
-        address: b.address,
-        city: b.city,
-        postal_code: b.postal_code,
-        lot_count: b.lot_count,
-        cover_url: b.cover_url,
-        role: role,
-        residence_id: b.residence_id,
-        is_placeholder: b.is_placeholder
-      }
+    json(conn, %{
+      data:
+        Enum.map(results, fn {b, role} ->
+          base = %{
+            id: b.id,
+            name: b.name,
+            address: b.address,
+            city: b.city,
+            postal_code: b.postal_code,
+            lot_count: b.lot_count,
+            cover_url: b.cover_url,
+            role: role,
+            residence_id: b.residence_id,
+            is_placeholder: b.is_placeholder
+          }
 
-      if user.role == :super_admin or role in @privileged_roles do
-        Map.put(base, :join_code, b.join_code)
-      else
-        base
-      end
-    end)})
+          if user.role == :super_admin or role in @privileged_roles do
+            Map.put(base, :join_code, b.join_code)
+          else
+            base
+          end
+        end)
+    })
   end
 
   def show(conn, %{"id" => id}) do
-    building = Buildings.get_building!(id)
-    json(conn, %{data: %{
-      id: building.id,
-      name: building.name,
-      address: building.address,
-      city: building.city,
-      postal_code: building.postal_code,
-      lot_count: building.lot_count,
-      cover_url: building.cover_url,
-      residence_id: building.residence_id
-    }})
+    user = Guardian.Plug.current_resource(conn)
+
+    with :ok <- authorize_member(conn, id, user) do
+      building = Buildings.get_building!(id)
+
+      json(conn, %{
+        data: %{
+          id: building.id,
+          name: building.name,
+          address: building.address,
+          city: building.city,
+          postal_code: building.postal_code,
+          lot_count: building.lot_count,
+          cover_url: building.cover_url,
+          residence_id: building.residence_id
+        }
+      })
+    end
+  rescue
+    Ecto.NoResultsError ->
+      conn |> put_status(:not_found) |> json(%{error: "not_found"})
   end
 
   # GET /api/v1/buildings/verify_code?code=XXXXXXXX
@@ -154,21 +167,29 @@ defmodule KomunBackendWeb.BuildingController do
   end
 
   def members(conn, %{"id" => id}) do
-    members = Buildings.list_members(id)
-    json(conn, %{data: Enum.map(members, fn m ->
-      %{
-        id: m.id,
-        role: m.role,
-        joined_at: m.joined_at,
-        user: %{
-          id: m.user.id,
-          email: m.user.email,
-          first_name: m.user.first_name,
-          last_name: m.user.last_name,
-          avatar_url: m.user.avatar_url
-        }
-      }
-    end)})
+    user = Guardian.Plug.current_resource(conn)
+
+    with :ok <- authorize_member(conn, id, user) do
+      members = Buildings.list_members(id)
+
+      json(conn, %{
+        data:
+          Enum.map(members, fn m ->
+            %{
+              id: m.id,
+              role: m.role,
+              joined_at: m.joined_at,
+              user: %{
+                id: m.user.id,
+                email: m.user.email,
+                first_name: m.user.first_name,
+                last_name: m.user.last_name,
+                avatar_url: m.user.avatar_url
+              }
+            }
+          end)
+      })
+    end
   end
 
   # DELETE /api/v1/buildings/:id
@@ -178,11 +199,12 @@ defmodule KomunBackendWeb.BuildingController do
   def delete(conn, %{"id" => id}) do
     user = Guardian.Plug.current_resource(conn)
 
-    if user.role == :super_admin or user.role in [:president_cs, :membre_cs, :syndic_manager, :syndic_staff, :council] do
+    if authorized_to_delete?(id, user) do
       building = Buildings.get_building!(id)
 
       case Buildings.delete_building(building) do
-        {:ok, _} -> json(conn, %{ok: true})
+        {:ok, _} ->
+          json(conn, %{ok: true})
 
         {:error, :has_active_members} ->
           conn
@@ -206,11 +228,48 @@ defmodule KomunBackendWeb.BuildingController do
   end
 
   def lots(conn, %{"id" => id}) do
-    lots = Buildings.list_lots(id)
-    json(conn, %{data: Enum.map(lots, fn l ->
-      %{id: l.id, number: l.number, type: l.type, floor: l.floor,
-        area_sqm: l.area_sqm, tantieme: l.tantieme, is_occupied: l.is_occupied}
-    end)})
+    user = Guardian.Plug.current_resource(conn)
+
+    with :ok <- authorize_member(conn, id, user) do
+      lots = Buildings.list_lots(id)
+
+      json(conn, %{
+        data:
+          Enum.map(lots, fn l ->
+            %{
+              id: l.id,
+              number: l.number,
+              type: l.type,
+              floor: l.floor,
+              area_sqm: l.area_sqm,
+              tantieme: l.tantieme,
+              is_occupied: l.is_occupied
+            }
+          end)
+      })
+    end
+  end
+
+  # Un utilisateur ne peut consulter la fiche / les membres / les lots
+  # d'un bâtiment que s'il en est membre actif (ou super_admin). Sinon 403.
+  # Même convention que `article_controller.authorize_member/3`.
+  defp authorize_member(conn, building_id, user) do
+    cond do
+      user.role == :super_admin -> :ok
+      Buildings.member?(building_id, user.id) -> :ok
+      true -> conn |> put_status(:forbidden) |> json(%{error: "forbidden"}) |> halt()
+    end
+  end
+
+  # La suppression d'un bâtiment exige un rôle privilégié SUR CE bâtiment
+  # (via le rôle de membre, pas le rôle global). Un président CS du bâtiment
+  # A ne doit pas pouvoir supprimer le bâtiment B. `super_admin` reste un
+  # bypass global.
+  @delete_roles [:president_cs, :membre_cs, :syndic_manager, :syndic_staff, :council]
+
+  defp authorized_to_delete?(building_id, user) do
+    user.role == :super_admin or
+      Buildings.get_member_role(building_id, user.id) in @delete_roles
   end
 
   # `users.role` peut valoir `:super_admin`, `:syndic_manager`, `:syndic_staff`
@@ -219,13 +278,13 @@ defmodule KomunBackendWeb.BuildingController do
   # gardien, prestataire, président_cs, membre_cs) sont communs aux deux
   # schémas et passent tels quels.
   @member_role_set MapSet.new([
-    :coproprietaire,
-    :locataire,
-    :gardien,
-    :prestataire,
-    :president_cs,
-    :membre_cs
-  ])
+                     :coproprietaire,
+                     :locataire,
+                     :gardien,
+                     :prestataire,
+                     :president_cs,
+                     :membre_cs
+                   ])
 
   defp global_role_to_member_role(role) when is_atom(role) do
     if MapSet.member?(@member_role_set, role), do: role, else: :coproprietaire

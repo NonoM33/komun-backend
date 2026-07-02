@@ -1,6 +1,8 @@
 defmodule KomunBackendWeb.DiligenceController do
   use KomunBackendWeb, :controller
 
+  require Logger
+
   alias KomunBackend.{Buildings, Diligences, Projects}
   alias KomunBackend.Diligences.{Diligence, DiligenceFile, Steps}
   alias KomunBackend.Auth.Guardian
@@ -63,9 +65,11 @@ defmodule KomunBackendWeb.DiligenceController do
         |> halt()
 
       {:error, reason} ->
+        Logger.error("[diligences] create failed building_id=#{building_id}: #{inspect(reason)}")
+
         conn
         |> put_status(:unprocessable_entity)
-        |> json(%{error: inspect(reason)})
+        |> json(%{error: "Une erreur est survenue"})
         |> halt()
 
       # `authorize_privileged/3` renvoie déjà le conn halted en cas
@@ -196,8 +200,7 @@ defmodule KomunBackendWeb.DiligenceController do
         conn
         |> put_status(:unprocessable_entity)
         |> json(%{
-          error:
-            "Type de fichier refusé (autorisés : PDF, JPEG, PNG, HEIC, WebP)"
+          error: "Type de fichier refusé (autorisés : PDF, JPEG, PNG, HEIC, WebP)"
         })
         |> halt()
 
@@ -231,9 +234,13 @@ defmodule KomunBackendWeb.DiligenceController do
             end
 
           {:error, reason} ->
+            Logger.error(
+              "[diligences] attach_file save failed diligence_id=#{diligence.id}: #{inspect(reason)}"
+            )
+
             conn
             |> put_status(:internal_server_error)
-            |> json(%{error: "Échec de l'enregistrement : #{inspect(reason)}"})
+            |> json(%{error: "Échec de l'enregistrement"})
         end
     end
   end
@@ -263,9 +270,13 @@ defmodule KomunBackendWeb.DiligenceController do
               |> json(%{errors: format_errors(cs)})
 
             {:error, reason} ->
+              Logger.error(
+                "[diligences] generate_letter failed diligence_id=#{id} kind=#{inspect(kind)}: #{inspect(reason)}"
+              )
+
               conn
               |> put_status(:bad_gateway)
-              |> json(%{error: "Échec de la génération : #{inspect(reason)}"})
+              |> json(%{error: "Échec de la génération"})
           end
       end
     else
@@ -506,8 +517,13 @@ defmodule KomunBackendWeb.DiligenceController do
     abs = Application.app_dir(:komun_backend, Path.join("priv/static", rel))
 
     case File.rm(abs) do
-      :ok -> :ok
-      {:error, reason} -> require Logger; Logger.warning("[diligences] could not remove #{abs}: #{inspect(reason)}"); :ok
+      :ok ->
+        :ok
+
+      {:error, reason} ->
+        require Logger
+        Logger.warning("[diligences] could not remove #{abs}: #{inspect(reason)}")
+        :ok
     end
   end
 

@@ -28,7 +28,7 @@ defmodule KomunBackendWeb.IncidentMemberRoutesTest do
 
   test "Phoenix nomme bien le path param :incident_id pour les member routes" do
     for {method, path} <- @member_paths do
-      info = Router.route_info(method, path, "stg-api.komun.app")
+      info = Phoenix.Router.route_info(Router, method, path, "stg-api.komun.app")
 
       assert info.path_params["incident_id"] == "00000000-0000-0000-0000-000000000002",
              "Pour #{method} #{path}, Phoenix doit fournir :incident_id (got: #{inspect(info.path_params)})"

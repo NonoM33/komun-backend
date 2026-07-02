@@ -2,17 +2,58 @@ defmodule KomunBackend.Organizations do
   @moduledoc """
   Context pour les organisations clientes (syndic, autonome).
 
-  Pour l'instant, ne contient que `list_for_staff/1`, utilisée par le
-  portail Komun staff (TICKET-2.3). Le reste (création, suspension,
-  vue 360, billing) arrive avec les tickets EPIC-2 / EPIC-3 / EPIC-6.
+  Expose `list_for_staff/1` (portail Komun staff, TICKET-2.3) et la
+  lecture d'une organisation par un de ses membres (`get_organization/1`,
+  `member?/2`). Le reste (création, suspension, vue 360, billing) arrive
+  avec les tickets EPIC-2 / EPIC-3 / EPIC-6.
   """
 
   import Ecto.Query
 
   alias KomunBackend.Accounts.User
+  alias KomunBackend.Buildings.{Building, BuildingMember}
   alias KomunBackend.Organizations.Organization
   alias KomunBackend.Repo
   alias KomunBackend.Residences.Residence
+
+  @doc """
+  Charge une organisation par son id. Renvoie `nil` si l'id est absent /
+  malformé (binary_id invalide) ou si aucune ligne ne correspond.
+  """
+  @spec get_organization(binary()) :: Organization.t() | nil
+  def get_organization(id) when is_binary(id) do
+    Repo.get(Organization, id)
+  rescue
+    Ecto.Query.CastError -> nil
+  end
+
+  def get_organization(_), do: nil
+
+  @doc """
+  Un utilisateur est membre d'une organisation si :
+
+  - son `organization_id` pointe dessus (cas syndic / user org-scopé), OU
+  - il a une adhésion active (`BuildingMember`) dans un bâtiment rattaché
+    à cette organisation (cas voisin d'une copro gérée par le syndic).
+
+  Le `super_admin` n'est PAS traité ici — c'est un bypass d'autorisation,
+  géré à l'appelant, pas une appartenance métier.
+  """
+  @spec member?(User.t(), Organization.t()) :: boolean()
+  def member?(%User{organization_id: org_id}, %Organization{id: org_id})
+      when not is_nil(org_id),
+      do: true
+
+  def member?(%User{id: user_id}, %Organization{id: org_id}) do
+    Repo.exists?(
+      from bm in BuildingMember,
+        join: b in Building,
+        on: b.id == bm.building_id,
+        where:
+          bm.user_id == ^user_id and bm.is_active == true and
+            b.organization_id == ^org_id
+    )
+  end
 
   @plans Ecto.Enum.values(Organization, :subscription_plan)
 

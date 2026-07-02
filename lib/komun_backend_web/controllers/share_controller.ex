@@ -22,6 +22,7 @@ defmodule KomunBackendWeb.ShareController do
   use KomunBackendWeb, :controller
 
   import Ecto.Query
+  require Logger
 
   alias KomunBackend.Articles
   alias KomunBackend.Articles.Article
@@ -144,10 +145,16 @@ defmodule KomunBackendWeb.ShareController do
     end
   end
 
+  # Ressource introuvable (`Ecto.NoResultsError`) ou id d'URL malformé
+  # (`Ecto.Query.CastError` sur un binary_id non-UUID) → preview générique.
+  # Toute autre exception (timeout BDD, connexion perdue, …) est loggée et
+  # relancée : on ne masque JAMAIS une vraie panne d'infra derrière un `nil`.
   defp safe_get_article(id) do
     Articles.get_article!(id)
   rescue
-    _ -> nil
+    Ecto.NoResultsError -> nil
+    Ecto.Query.CastError -> nil
+    error -> log_and_reraise(error, __STACKTRACE__, "article", id)
   end
 
   defp build_project_payload(project_id) do
@@ -169,10 +176,15 @@ defmodule KomunBackendWeb.ShareController do
     end
   end
 
+  # `Repo.one` renvoie déjà `nil` si l'id n'existe pas — pas besoin de rescue
+  # pour le not-found. Seul un id d'URL malformé (non-UUID) lève
+  # `Ecto.Query.CastError`, qu'on ramène à `nil` (preview générique). Toute
+  # autre exception (panne BDD) est loggée et relancée.
   defp safe_get_project(id) do
     Repo.one(from(p in Project, where: p.id == ^id))
   rescue
-    _ -> nil
+    Ecto.Query.CastError -> nil
+    error -> log_and_reraise(error, __STACKTRACE__, "project", id)
   end
 
   defp build_battle_payload(battle_id) do
@@ -196,10 +208,14 @@ defmodule KomunBackendWeb.ShareController do
     end
   end
 
+  # Idem `safe_get_article/1` : not-found (`Ecto.NoResultsError`) ou id
+  # malformé (`Ecto.Query.CastError`) → `nil`. Le reste est loggé et relancé.
   defp safe_get_battle(id) do
     Battles.get_battle!(id)
   rescue
-    _ -> nil
+    Ecto.NoResultsError -> nil
+    Ecto.Query.CastError -> nil
+    error -> log_and_reraise(error, __STACKTRACE__, "battle", id)
   end
 
   defp build_doleance_payload(doleance_id) do
@@ -222,12 +238,29 @@ defmodule KomunBackendWeb.ShareController do
     end
   end
 
-  # Doleances n'a pas (encore) de get_doleance/1 sans bang public —
-  # on encapsule pour ne pas crasher sur un id inexistant.
+  # `Doleances.get_doleance/1` s'appuie sur `Repo.get/2` : il renvoie déjà
+  # `nil` pour un id inexistant. Seul un id d'URL malformé (non-UUID) lève
+  # `Ecto.Query.CastError`, qu'on ramène à `nil`. Toute autre exception
+  # (panne BDD) est loggée et relancée.
   defp safe_get_doleance(id) do
     Doleances.get_doleance(id)
   rescue
-    _ -> nil
+    Ecto.Query.CastError -> nil
+    error -> log_and_reraise(error, __STACKTRACE__, "doleance", id)
+  end
+
+  # Centralise le comportement « ce n'est pas un not-found légitime » :
+  # on trace l'exception avec assez de contexte pour debugger en prod
+  # (type de ressource + id) puis on relance à l'identique. Objectif :
+  # une panne BDD (timeout, connexion) reste visible dans les logs et
+  # remonte comme une vraie 500, au lieu d'être avalée en `nil`.
+  defp log_and_reraise(error, stacktrace, resource, id) do
+    Logger.error(
+      "ShareController: erreur inattendue en chargeant #{resource} #{inspect(id)}: " <>
+        Exception.format(:error, error, stacktrace)
+    )
+
+    reraise(error, stacktrace)
   end
 
   # ── Formatteurs description (≤ 280 chars pour rentrer dans og:description) ──

@@ -14,6 +14,10 @@ defmodule KomunBackend.MigrationsUniqueTest do
       migrations_dir
       |> File.ls!()
       |> Enum.filter(&String.ends_with?(&1, ".exs"))
+      # `.formatter.exs` (config du formateur des migrations) vit dans ce
+      # dossier mais n'est PAS une migration : on ne garde que les fichiers
+      # préfixés d'un timestamp à 14 chiffres.
+      |> Enum.filter(&Regex.match?(~r/^\d{14}_/, &1))
       |> Enum.map(fn name ->
         case Regex.run(~r/^(\d{14})_/, name) do
           [_, ts] -> {ts, name}

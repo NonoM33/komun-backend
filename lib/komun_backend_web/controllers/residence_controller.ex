@@ -1,11 +1,23 @@
 defmodule KomunBackendWeb.ResidenceController do
   use KomunBackendWeb, :controller
 
+  import Ecto.Query, only: [from: 2]
+
+  alias KomunBackend.Repo
   alias KomunBackend.Residences
   alias KomunBackend.Residences.Residence
+  alias KomunBackend.Buildings.{Building, BuildingMember}
   alias KomunBackend.{Doleances, Incidents}
 
   @privileged_roles [:president_cs, :membre_cs, :syndic_manager, :syndic_staff, :council]
+
+  # Rôles conseil syndical portés par `BuildingMember.role` (scopés au
+  # bâtiment, donc à la résidence via `building.residence_id`).
+  @cs_roles [:president_cs, :membre_cs]
+
+  # Rôles syndic portés par `User.role` (plateforme-wide) : un syndic est
+  # habilité sur toutes les résidences qu'il gère. On les garde globaux.
+  @syndic_roles [:syndic_manager, :syndic_staff]
 
   # ── Listing ────────────────────────────────────────────────────────────────
 
@@ -143,7 +155,9 @@ defmodule KomunBackendWeb.ResidenceController do
           attrs = Map.drop(params, ["id"])
 
           case Residences.update_residence(residence, attrs) do
-            {:ok, updated} -> json(conn, %{data: residence_json(updated, user)})
+            {:ok, updated} ->
+              json(conn, %{data: residence_json(updated, user)})
+
             {:error, cs} ->
               conn |> put_status(:unprocessable_entity) |> json(%{errors: format_errors(cs)})
           end
@@ -182,7 +196,9 @@ defmodule KomunBackendWeb.ResidenceController do
 
             true ->
               case Residences.delete_residence(residence) do
-                {:ok, _} -> json(conn, %{ok: true})
+                {:ok, _} ->
+                  json(conn, %{ok: true})
+
                 {:error, cs} ->
                   conn
                   |> put_status(:unprocessable_entity)
@@ -317,7 +333,8 @@ defmodule KomunBackendWeb.ResidenceController do
     end
   end
 
-  def merge(conn, _), do: conn |> put_status(:bad_request) |> json(%{error: "source_ids required"})
+  def merge(conn, _),
+    do: conn |> put_status(:bad_request) |> json(%{error: "source_ids required"})
 
   # POST /api/v1/residences/:id/buildings/:building_id/attach
   def attach_building(conn, %{"id" => residence_id, "building_id" => building_id}) do
@@ -348,12 +365,37 @@ defmodule KomunBackendWeb.ResidenceController do
 
   # ── Helpers ───────────────────────────────────────────────────────────────
 
-  defp authorized_for?(user, _residence) do
-    # Pour l'instant : super_admin + rôles CS/syndic. Le scoping "seulement
-    # les résidences où l'user a vraiment un rôle" viendra quand on aura
-    # besoin de passer du CS d'une résidence à une autre (multi-copro).
-    user.role == :super_admin or user.role in @privileged_roles
+  # Autorise l'édition / suppression / merge / attach d'UNE résidence donnée.
+  #
+  # - `super_admin` : habilité partout (rôle plateforme global).
+  # - syndic (`:syndic_manager` / `:syndic_staff`) : rôle plateforme global,
+  #   habilité sur les résidences qu'il gère → conservé global.
+  # - conseil syndical (`:president_cs` / `:membre_cs`) : rôle porté PAR
+  #   BÂTIMENT (`BuildingMember.role`). Un membre CS n'est habilité QUE sur
+  #   la résidence de son/ses bâtiment(s). Vérification scopée obligatoire :
+  #   un CS de la résidence X ne doit PAS pouvoir toucher la résidence Y.
+  defp authorized_for?(nil, _residence), do: false
+
+  defp authorized_for?(%{role: :super_admin}, _residence), do: true
+
+  defp authorized_for?(%{role: role}, _residence) when role in @syndic_roles, do: true
+
+  defp authorized_for?(%{id: user_id}, %Residence{id: residence_id}) do
+    Repo.exists?(
+      from(m in BuildingMember,
+        join: b in Building,
+        on: b.id == m.building_id,
+        where:
+          b.residence_id == ^residence_id and
+            b.is_active == true and
+            m.is_active == true and
+            m.user_id == ^user_id and
+            m.role in ^@cs_roles
+      )
+    )
   end
+
+  defp authorized_for?(_user, _residence), do: false
 
   defp residence_json(%Residence{} = r, user) do
     buildings =
