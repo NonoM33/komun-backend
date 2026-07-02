@@ -280,6 +280,78 @@ defmodule KomunBackendWeb.ShareControllerTest do
     end
   end
 
+  describe "rescue ciblé sur les safe_get_* (non-régression)" do
+    # Ces tests garantissent que les helpers `safe_get_*` avalent
+    # UNIQUEMENT les cas légitimes « ressource introuvable » /
+    # « id d'URL malformé » (non-UUID → Ecto.Query.CastError), et pas
+    # n'importe quelle exception. Avant, un `rescue _ -> nil` masquait
+    # silencieusement une vraie panne BDD (timeout, connexion perdue).
+    # On vérifie ici le versant « not found reste bien un not found ».
+
+    test "article : UUID valide inexistant → preview générique (Ecto.NoResultsError capté)",
+         %{conn: conn} do
+      conn = get(conn, ~p"/share/articles/00000000-0000-0000-0000-000000000000")
+
+      assert response = response(conn, 200)
+      assert response =~ "Komun"
+      assert response =~ "og:title"
+    end
+
+    test "article : id d'URL malformé (non-UUID) → preview générique (Ecto.Query.CastError capté)",
+         %{conn: conn} do
+      conn = get(conn, ~p"/share/articles/pas-un-uuid")
+
+      assert response = response(conn, 200)
+      assert response =~ "Komun"
+      assert response =~ "og:title"
+    end
+
+    test "battle : id d'URL malformé (non-UUID) → preview générique",
+         %{conn: conn} do
+      conn = get(conn, ~p"/share/battles/pas-un-uuid")
+
+      assert response = response(conn, 200)
+      assert response =~ "Komun"
+      assert response =~ "og:title"
+    end
+
+    test "projet : UUID valide inexistant → preview générique (Repo.one renvoie nil)",
+         %{conn: conn} do
+      conn = get(conn, ~p"/share/projects/00000000-0000-0000-0000-000000000000")
+
+      assert response = response(conn, 200)
+      assert response =~ "Komun"
+      assert response =~ "og:title"
+    end
+
+    test "projet : id d'URL malformé (non-UUID) → preview générique (Ecto.Query.CastError capté)",
+         %{conn: conn} do
+      conn = get(conn, ~p"/share/projects/pas-un-uuid")
+
+      assert response = response(conn, 200)
+      assert response =~ "Komun"
+      assert response =~ "og:title"
+    end
+
+    test "doléance : UUID valide inexistant → preview générique (Repo.get renvoie nil)",
+         %{conn: conn} do
+      conn = get(conn, ~p"/share/doleances/00000000-0000-0000-0000-000000000000")
+
+      assert response = response(conn, 200)
+      assert response =~ "Komun"
+      assert response =~ "og:title"
+    end
+
+    test "doléance : id d'URL malformé (non-UUID) → preview générique (Ecto.Query.CastError capté)",
+         %{conn: conn} do
+      conn = get(conn, ~p"/share/doleances/pas-un-uuid")
+
+      assert response = response(conn, 200)
+      assert response =~ "Komun"
+      assert response =~ "og:title"
+    end
+  end
+
   describe "GET /share/diligences/:id" do
     test "diligence (CS-only) → toujours preview générique, JAMAIS le titre",
          %{conn: conn} do
