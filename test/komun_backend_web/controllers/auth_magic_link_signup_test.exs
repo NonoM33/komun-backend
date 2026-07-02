@@ -24,14 +24,14 @@ defmodule KomunBackendWeb.AuthMagicLinkSignupTest do
 
     {:ok, residence} =
       %KomunBackend.Residences.Residence{}
-      |> KomunBackend.Residences.Residence.changeset(%{
+      |> KomunBackend.Residences.Residence.initial_changeset(%{
         name: "Résidence #{code}",
         join_code: residence_code
       })
       |> Repo.insert()
 
     %Building{}
-    |> Building.changeset(%{
+    |> Building.initial_changeset(%{
       name: "La Garenne",
       address: "3 place du Marché",
       city: "Lyon",
@@ -118,7 +118,8 @@ defmodule KomunBackendWeb.AuthMagicLinkSignupTest do
 
     test "returns joined_building: null when join_code doesn't match any building",
          %{conn: conn} do
-      {:ok, %{token: token}} = Accounts.create_magic_link("badcode@example.com", join_code: "NOMATCH9")
+      {:ok, %{token: token}} =
+        Accounts.create_magic_link("badcode@example.com", join_code: "NOMATCH9")
 
       body =
         conn
@@ -141,7 +142,10 @@ defmodule KomunBackendWeb.AuthMagicLinkSignupTest do
 
       body =
         conn
-        |> post(~p"/api/v1/auth/magic-code/verify", %{"email" => "ios@example.com", "code" => code})
+        |> post(~p"/api/v1/auth/magic-code/verify", %{
+          "email" => "ios@example.com",
+          "code" => code
+        })
         |> json_response(200)
 
       assert body["access_token"]

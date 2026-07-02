@@ -13,10 +13,7 @@ defmodule KomunBackend.ResidencesTest do
       postal_code: "75015"
     }
 
-    {:ok, residence} =
-      %Residence{}
-      |> Residence.changeset(Map.merge(defaults, attrs))
-      |> Repo.insert()
+    {:ok, residence} = Residences.create_residence(Map.merge(defaults, attrs))
 
     residence
   end
@@ -32,7 +29,7 @@ defmodule KomunBackend.ResidencesTest do
     }
 
     %Building{}
-    |> Building.admin_changeset(Map.merge(defaults, attrs))
+    |> Building.initial_changeset(Map.merge(defaults, attrs))
     |> Repo.insert!()
   end
 

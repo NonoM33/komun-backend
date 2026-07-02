@@ -162,6 +162,7 @@ defmodule KomunBackend.BattlesTest do
 
       # L'erreur remonte sur la sous-association options[i].external_url.
       errors = Ecto.Changeset.traverse_errors(cs, fn {msg, _opts} -> msg end)
+
       assert get_in(errors, [:options]) |> List.first() |> Map.get(:external_url) ==
                ["doit être une URL HTTP(S) valide"]
     end
@@ -249,6 +250,7 @@ defmodule KomunBackend.BattlesTest do
   describe "advance_battle!/1 — round non terminal" do
     test "ferme le round, calcule le top-2 et ouvre le round 2 avec ses options" do
       {building, user} = setup_with_president()
+
       {:ok, battle} =
         Battles.create_battle(building.id, user.id, %{
           "title" => "Sujet",
@@ -291,6 +293,7 @@ defmodule KomunBackend.BattlesTest do
 
     test "garde tous les ex-aequo au seuil top-2 (3 finalistes possibles)" do
       {building, user} = setup_with_president()
+
       {:ok, battle} =
         Battles.create_battle(building.id, user.id, %{
           "title" => "Sujet",
@@ -323,6 +326,7 @@ defmodule KomunBackend.BattlesTest do
   describe "advance_battle!/1 — round final" do
     test "déclare le gagnant et passe le statut à :finished" do
       {building, user} = setup_with_president()
+
       {:ok, battle} =
         Battles.create_battle(building.id, user.id, %{
           "title" => "Sujet",
@@ -330,21 +334,28 @@ defmodule KomunBackend.BattlesTest do
         })
 
       [vote] = battle.votes
-      [a, _b, _c, _d, _e] = vote.options
+      [a, b, _c, _d, _e] = vote.options
 
-      voter = insert_user!()
-      {:ok, _} = Buildings.add_member(building.id, voter.id, :coproprietaire)
-      Battles.cast_vote(battle.id, voter.id, a.id)
+      # Deux votants sur deux options distinctes → au moins 2 qualifiés au
+      # run-off (sinon, avec un seul candidat qui a des voix, le tournoi se
+      # finalise dès le round 1 — cf. `qualifiers_for_runoff`).
+      voter_a = insert_user!()
+      voter_b = insert_user!()
+      {:ok, _} = Buildings.add_member(building.id, voter_a.id, :coproprietaire)
+      {:ok, _} = Buildings.add_member(building.id, voter_b.id, :coproprietaire)
+      Battles.cast_vote(battle.id, voter_a.id, a.id)
+      Battles.cast_vote(battle.id, voter_b.id, b.id)
 
       # Round 1 → round 2
       {:advanced, _} = Battles.advance_battle!(battle.id)
 
-      # Vote pour le round 2 : le label de A gagne
+      # Vote pour le round 2 : les deux votants choisissent A → A gagne
       battle2 = Battles.get_battle!(battle.id)
       r2 = Enum.find(battle2.votes, &(&1.round_number == 2))
       r2_a = Enum.find(r2.options, &(&1.label == a.label))
 
-      Battles.cast_vote(battle.id, voter.id, r2_a.id)
+      Battles.cast_vote(battle.id, voter_a.id, r2_a.id)
+      Battles.cast_vote(battle.id, voter_b.id, r2_a.id)
 
       # Round 2 = max → finalize
       {:finished, finished} = Battles.advance_battle!(battle.id)
@@ -355,6 +366,7 @@ defmodule KomunBackend.BattlesTest do
 
     test "idempotent : 2e advance sur une finished est no-op" do
       {building, user} = setup_with_president()
+
       {:ok, battle} =
         Battles.create_battle(building.id, user.id, %{
           "title" => "Sujet",
@@ -372,6 +384,7 @@ defmodule KomunBackend.BattlesTest do
   describe "tally_round/1" do
     test "ordonne les options par votes desc puis label asc (ex-aequo stable)" do
       {building, user} = setup_with_president()
+
       {:ok, battle} =
         Battles.create_battle(building.id, user.id, %{
           "title" => "Sujet",

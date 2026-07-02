@@ -19,7 +19,7 @@ defmodule KomunBackendWeb.CodesVerifyTest do
   defp insert_residence!(code) do
     {:ok, r} =
       %Residence{}
-      |> Residence.changeset(%{
+      |> Residence.initial_changeset(%{
         name: "Résidence Unissons",
         address: "17 route d'Antony",
         city: "Wissous",
@@ -31,15 +31,16 @@ defmodule KomunBackendWeb.CodesVerifyTest do
     r
   end
 
-  defp insert_building!(residence, code, name) do
+  defp insert_building!(residence, code, name, opts \\ []) do
     %Building{}
-    |> Building.admin_changeset(%{
+    |> Building.initial_changeset(%{
       name: name,
       address: "17 route d'Antony",
       city: "Wissous",
       postal_code: "91320",
       residence_id: residence.id,
-      join_code: code
+      join_code: code,
+      is_placeholder: Keyword.get(opts, :is_placeholder, false)
     })
     |> Repo.insert!()
   end
@@ -104,7 +105,10 @@ defmodule KomunBackendWeb.CodesVerifyTest do
     # Batiment B dedans. À l'inscription, il ne faut pas proposer au
     # voisin de rejoindre "unissons" (placeholder) dans la liste.
     residence = insert_residence!("PLACEHLD")
-    _placeholder = insert_building!(residence, "PLACED01", "Résidence Unissons")
+
+    _placeholder =
+      insert_building!(residence, "PLACED01", "Résidence Unissons", is_placeholder: true)
+
     _a = insert_building!(residence, "PLACED02", "Bâtiment A")
     _b = insert_building!(residence, "PLACED03", "Bâtiment B")
 
@@ -124,7 +128,7 @@ defmodule KomunBackendWeb.CodesVerifyTest do
     # le même nom que la copro. Il faut le garder visible, sinon la liste
     # se retrouve vide et l'user ne peut rien choisir.
     residence = insert_residence!("MONOBAT1")
-    _only = insert_building!(residence, "MONOBAT2", "Résidence Unissons")
+    _only = insert_building!(residence, "MONOBAT2", "Résidence Unissons", is_placeholder: true)
 
     body =
       conn
