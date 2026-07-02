@@ -291,4 +291,123 @@ defmodule KomunBackend.DiligencesTest do
       assert updated.mise_en_demeure_letter == "Mise en demeure..."
     end
   end
+
+  describe "update_diligence/2" do
+    test "met à jour titre et statut" do
+      {building, user} = setup_building_and_president()
+      {:ok, d} = Diligences.create_diligence(building.id, user, %{"title" => "Sujet initial"})
+
+      assert {:ok, updated} =
+               Diligences.update_diligence(d, %{
+                 "title" => "Sujet renommé",
+                 "status" => "closed"
+               })
+
+      assert updated.title == "Sujet renommé"
+      assert updated.status == :closed
+    end
+
+    test "ne peut pas réécraser created_by_id ni building_id (champs verrouillés)" do
+      {building, user} = setup_building_and_president()
+      other = insert_user!(:syndic_manager)
+      {:ok, d} = Diligences.create_diligence(building.id, user, %{"title" => "Sujet test"})
+
+      {:ok, updated} =
+        Diligences.update_diligence(d, %{
+          "title" => "Nouveau titre",
+          "created_by_id" => other.id,
+          "building_id" => Ecto.UUID.generate()
+        })
+
+      assert updated.created_by_id == user.id
+      assert updated.building_id == building.id
+    end
+
+    test "rejette un titre trop court à l'update" do
+      {building, user} = setup_building_and_president()
+      {:ok, d} = Diligences.create_diligence(building.id, user, %{"title" => "Sujet test"})
+
+      assert {:error, %Ecto.Changeset{} = cs} =
+               Diligences.update_diligence(d, %{"title" => "abc"})
+
+      assert "should be at least 5 character(s)" in errors_on(cs).title
+    end
+  end
+
+  describe "delete_diligence/1" do
+    test "supprime la diligence (steps en cascade DB)" do
+      {building, user} = setup_building_and_president()
+      {:ok, d} = Diligences.create_diligence(building.id, user, %{"title" => "Sujet à supprimer"})
+
+      assert {:ok, _} = Diligences.delete_diligence(d)
+      assert is_nil(Diligences.get_diligence(d.id))
+    end
+  end
+
+  describe "list_by_incident/1" do
+    test "ne retourne que les diligences liées à l'incident demandé" do
+      {building, user} = setup_building_and_president()
+
+      incident =
+        %KomunBackend.Incidents.Incident{}
+        |> KomunBackend.Incidents.Incident.changeset(%{
+          title: "Incident source",
+          description: "desc",
+          category: :autre,
+          building_id: building.id,
+          reporter_id: user.id
+        })
+        |> Repo.insert!()
+
+      {:ok, linked} =
+        Diligences.create_diligence(building.id, user, %{
+          "title" => "Diligence liée",
+          "linked_incident_id" => incident.id
+        })
+
+      {:ok, _unrelated} =
+        Diligences.create_diligence(building.id, user, %{"title" => "Diligence sans lien"})
+
+      results = Diligences.list_by_incident(incident.id)
+      assert length(results) == 1
+      assert hd(results).id == linked.id
+    end
+  end
+
+  describe "create_residence_diligence/3" do
+    test "crée une diligence rattachée à la résidence avec ses 9 steps" do
+      residence = insert_residence!()
+      building = insert_building!(residence)
+      user = insert_user!(:syndic_manager)
+      {:ok, _} = Buildings.add_member(building.id, user.id, :president_cs)
+
+      {:ok, %Diligence{} = d} =
+        Diligences.create_residence_diligence(residence.id, user, %{
+          "title" => "Sujet transverse résidence"
+        })
+
+      assert d.residence_id == residence.id
+      assert is_nil(d.building_id)
+      assert length(d.steps) == 9
+
+      ids =
+        Diligences.list_residence_diligences(residence.id) |> Enum.map(& &1.id)
+
+      assert d.id in ids
+    end
+  end
+
+  describe "privileged_members/1" do
+    test "remonte les membres CS et exclut les copropriétaires standard" do
+      {building, president} = setup_building_and_president()
+
+      lambda = insert_user!()
+      {:ok, _} = Buildings.add_member(building.id, lambda.id, :coproprietaire)
+
+      member_ids = Diligences.privileged_members(building.id) |> Enum.map(& &1.id)
+
+      assert president.id in member_ids
+      refute lambda.id in member_ids
+    end
+  end
 end
