@@ -89,5 +89,140 @@ defmodule KomunBackendWeb.BuildingControllerTest do
       assert body["data"]["id"] == building.id
       assert body["data"]["residence_id"] == residence.id
     end
+
+    test "membre → succès", %{conn: conn} do
+      residence = insert_residence!()
+      building = insert_building!(residence)
+      user = insert_user!()
+      {:ok, _} = Buildings.add_member(building.id, user.id, :coproprietaire)
+
+      body =
+        conn
+        |> authed(user)
+        |> get(~p"/api/v1/buildings/#{building.id}")
+        |> json_response(200)
+
+      assert body["data"]["id"] == building.id
+    end
+
+    test "authentifié non-membre → 403 (n'expose pas l'adresse d'un bâtiment tiers)",
+         %{conn: conn} do
+      residence = insert_residence!()
+      building = insert_building!(residence)
+      # Utilisateur authentifié mais rattaché à AUCUN bâtiment.
+      outsider = insert_user!()
+
+      conn
+      |> authed(outsider)
+      |> get(~p"/api/v1/buildings/#{building.id}")
+      |> json_response(403)
+    end
+  end
+
+  describe "GET /api/v1/buildings/:id/members" do
+    test "membre → succès", %{conn: conn} do
+      residence = insert_residence!()
+      building = insert_building!(residence)
+      user = insert_user!()
+      {:ok, _} = Buildings.add_member(building.id, user.id, :coproprietaire)
+
+      body =
+        conn
+        |> authed(user)
+        |> get(~p"/api/v1/buildings/#{building.id}/members")
+        |> json_response(200)
+
+      assert is_list(body["data"])
+    end
+
+    test "authentifié non-membre → 403 (n'expose pas emails/noms des membres)",
+         %{conn: conn} do
+      residence = insert_residence!()
+      building = insert_building!(residence)
+      member = insert_user!()
+      {:ok, _} = Buildings.add_member(building.id, member.id, :coproprietaire)
+      outsider = insert_user!()
+
+      conn
+      |> authed(outsider)
+      |> get(~p"/api/v1/buildings/#{building.id}/members")
+      |> json_response(403)
+    end
+  end
+
+  describe "GET /api/v1/buildings/:id/lots" do
+    test "membre → succès", %{conn: conn} do
+      residence = insert_residence!()
+      building = insert_building!(residence)
+      user = insert_user!()
+      {:ok, _} = Buildings.add_member(building.id, user.id, :coproprietaire)
+
+      body =
+        conn
+        |> authed(user)
+        |> get(~p"/api/v1/buildings/#{building.id}/lots")
+        |> json_response(200)
+
+      assert is_list(body["data"])
+    end
+
+    test "authentifié non-membre → 403 (n'expose pas la cartographie des lots)",
+         %{conn: conn} do
+      residence = insert_residence!()
+      building = insert_building!(residence)
+      outsider = insert_user!()
+
+      conn
+      |> authed(outsider)
+      |> get(~p"/api/v1/buildings/#{building.id}/lots")
+      |> json_response(403)
+    end
+  end
+
+  describe "DELETE /api/v1/buildings/:id" do
+    test "président CS DU bâtiment → passe l'authz (403 seulement si non-membre)",
+         %{conn: conn} do
+      residence = insert_residence!()
+      building = insert_building!(residence)
+      president = insert_user!(:president_cs)
+      {:ok, _} = Buildings.add_member(building.id, president.id, :president_cs)
+
+      body =
+        conn
+        |> authed(president)
+        |> delete(~p"/api/v1/buildings/#{building.id}")
+        |> json_response(422)
+
+      # 422 (et non 403) prouve que le président CS DU bâtiment a franchi
+      # l'authz : le refus est purement métier (il reste un membre actif).
+      assert body["error"] == "has_active_members"
+    end
+
+    test "CS d'un AUTRE bâtiment → 403 (ne peut pas supprimer un bâtiment tiers)",
+         %{conn: conn} do
+      residence = insert_residence!()
+      building_a = insert_building!(residence)
+      building_b = insert_building!(residence)
+
+      # Président CS du bâtiment A uniquement.
+      president_a = insert_user!(:president_cs)
+      {:ok, _} = Buildings.add_member(building_a.id, president_a.id, :president_cs)
+
+      conn
+      |> authed(president_a)
+      |> delete(~p"/api/v1/buildings/#{building_b.id}")
+      |> json_response(403)
+    end
+
+    test "authentifié non-membre (rôle global copropriétaire) → 403", %{conn: conn} do
+      residence = insert_residence!()
+      building = insert_building!(residence)
+      outsider = insert_user!(:coproprietaire)
+
+      conn
+      |> authed(outsider)
+      |> delete(~p"/api/v1/buildings/#{building.id}")
+      |> json_response(403)
+    end
   end
 end
