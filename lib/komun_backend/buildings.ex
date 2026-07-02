@@ -153,17 +153,17 @@ defmodule KomunBackend.Buildings do
 
   # Stuffs a fresh join_code into the attrs if the caller didn't provide one.
   # We accept both atom- and string-keyed maps since callers here aren't
-  # consistent.
+  # consistent. On délègue à `put_attr/3` pour respecter le style de clés du
+  # caller (atom vs string) : injecter une clé du mauvais type produit une map
+  # mixte que le `cast` du changeset rejette (`Ecto.CastError: mixed keys`).
+  # Le join_code reste généré uniquement à la création — pas de rotation.
   defp ensure_join_code(attrs) when is_map(attrs) do
     has_code? = Map.has_key?(attrs, :join_code) or Map.has_key?(attrs, "join_code")
 
     if has_code? do
       attrs
     else
-      cond do
-        Map.has_key?(attrs, :organization_id) -> Map.put(attrs, :join_code, generate_join_code())
-        true -> Map.put(attrs, "join_code", generate_join_code())
-      end
+      put_attr(attrs, :join_code, generate_join_code())
     end
   end
 
